@@ -206,8 +206,9 @@ aggregation server masks **before storing**, so `push --raw` still cannot put li
 credentials into the server database.
 
 Detected: known prefixes (`sk-`, `ghp_`, `AKIA`, `AIza`, `Bearer`, JWTs, PEM private
-keys), labelled assignments (`TOKEN=…`, `password: …`), and credential-bearing commands
-(`curl -u user:pass`, `htpasswd -nbB user pass`).
+keys); labelled values — `TOKEN=…` plus `password:` / `token:` / `secret:` / `api key:` /
+`access key:` and their Japanese equivalents, with the full-width colon accepted; and
+credential-bearing commands (`curl -u user:pass`, `htpasswd -nbB user pass`).
 
 **A bare random string cannot be masked.** With no label and no prefix there is nothing to
 key on, and entropy-based detection produces too many false positives to be usable. Write

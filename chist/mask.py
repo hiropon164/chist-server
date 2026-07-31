@@ -23,8 +23,11 @@ _PATTERNS = [
                 r'["\']?([^\s"\'&]{8,})'), r'\1=***'),
     # Values written with a label, e.g. "password: xxx" or "password = xxx".
     # Japanese labels and the full-width colon are included: in practice the English
-    # assignment form alone lets real secrets through.
-    (re.compile(r'(?i)(パスワード|パスフレーズ|password|passwd|passphrase)'
+    # assignment form alone lets real secrets through. The English words here overlap
+    # with the assignment rule above, but that one only fires on an all-caps name.
+    (re.compile(r'(?i)(パスワード|パスフレーズ|パスコード|トークン|シークレット|'
+                r'秘密鍵|認証情報|API\s*キー|アクセスキー|'
+                r'password|passwd|passphrase|token|secret|api\s*key|access\s*key)'
                 r'\s*[:：=]\s*["\'`]?([^\s"\'`、。，]{6,})'), r'\1: ***'),
     # Credentials passed as command arguments. A bare random string has no assignment
     # form to key on, so these command shapes are matched explicitly.
