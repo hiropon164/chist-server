@@ -146,5 +146,6 @@ def show(conn, session_ext_id, masked=True, kinds=None, source=None):
         d['text'] = mask(d['text'], masked)
         msgs.append(d)
     out = dict(row)
+    out['title'] = mask(out['title'], masked)
     out['ambiguous'] = len(rows) > 1
     return out, msgs

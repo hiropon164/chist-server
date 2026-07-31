@@ -184,6 +184,36 @@ uv pip install --python .venv/bin/python mcp
 Only `chist/mcp_server.py` imports `mcp`. Ingest, search, and the CLI stay
 dependency-free on the system Python.
 
+## Tests
+
+Standard-library `unittest` only — the zero-dependency rule holds for the tests too.
+
+```bash
+python3 -m unittest discover -s tests -t .
+```
+
+Server-side tests need the MCP SDK and skip automatically without it. To run
+everything, use the image:
+
+```bash
+docker run --rm -v "$PWD/tests":/app/tests:ro -w /app chist:latest \
+  python -m unittest discover -s tests -t /app
+```
+
+The suite covers behaviour that has actually broken, or could:
+
+- masking detects secrets **and leaves ordinary prose alone** (labels with no value,
+  short placeholders, everyday commands)
+- session **titles** are masked, not just bodies — Cursor and Antigravity derive titles
+  from the first user message
+- the same ext_id under two sources is ambiguous, and `source` resolves it
+- the 3-character trigram floor, and that FTS special characters never raise
+- prune refuses to run without a condition, **does not sweep up already-empty
+  sessions**, covers sources with NULL timestamps, and keeps the FTS index in step
+- foreign keys and `ON DELETE CASCADE`; deduplication via `UNIQUE (source, ext_id, part)`
+- authentication (match, mismatch, and deny-all when no token is configured), the
+  64 MiB body cap, and malformed payloads
+
 ## Security model
 
 **Never expose the app directly.** Two route groups cannot authenticate themselves:

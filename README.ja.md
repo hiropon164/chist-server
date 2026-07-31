@@ -187,6 +187,33 @@ Antigravity 側の書式が変われば静かに取りこぼす可能性があ�
 サーバ側は docker volume 内に置き、バックアップの保管先も同じ前提で扱う。
 「マスクがあるから DB は安全」ではない。
 
+## テスト
+
+標準ライブラリの `unittest` のみ。依存ゼロの方針は崩していない。
+
+```bash
+python3 -m unittest discover -s tests -t .
+```
+
+MCP SDK を必要とするサーバ側のテストは、SDK が無い環境では自動でスキップされる。
+すべて動かすならコンテナ内で:
+
+```bash
+docker run --rm -v "$PWD/tests":/app/tests:ro -w /app chist:latest \
+  python -m unittest discover -s tests -t /app
+```
+
+カバーしているのは、過去に実際に壊れた（あるいは壊れうる）挙動:
+
+- マスキングの検出と**誤検知しないこと**（日本語ラベル、値の無いラベル、通常のコマンド）
+- 本文だけでなく**セッションタイトルもマスクされること**
+- 同じ ext_id が別ソースにある場合の曖昧さと `source` による解決
+- trigram の 3 文字未満フォールバックと、FTS 構文エラーを起こさないこと
+- prune の条件必須ガード、**元から空のセッションを巻き込まないこと**、
+  ts が NULL のソースも期間指定で消えること、削除後に FTS 索引が追随すること
+- 外部キーと `ON DELETE CASCADE`、`UNIQUE (source, ext_id, part)` による重複排除
+- 認証（トークン一致・不一致・未設定時は全拒否）、payload 上限 64MiB、壊れた payload
+
 ## MCP サーバ
 
 エージェント自身に履歴を引かせる場合は MCP サーバを使う。**MCP 2026-07-28 対応**
