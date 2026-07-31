@@ -1,0 +1,22 @@
+[project]
+name = "chist"
+version = "0.1.0"
+description = "CLI チャット履歴の統合検索（Claude Code / Codex / Cursor CLI / Antigravity CLI）"
+requires-python = ">=3.9"
+dependencies = []
+
+# 取り込み・検索・CLI は依存ゼロ（Python 3.9 標準ライブラリのみ）で動く。
+# MCP サーバだけが公式 SDK を必要とし、SDK が Python 3.10+ を要求する。
+[project.optional-dependencies]
+mcp = ["mcp>=2.0.0"]
+
+[project.scripts]
+chist = "chist.cli:main"
+chist-mcp = "chist.mcp_server:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["chist", "chist.adapters"]
