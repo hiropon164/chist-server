@@ -1,4 +1,4 @@
-"""Antigravity CLI の steps.step_payload (生protobuf) からテキストを抽出する最小パーサ"""
+"""Minimal parser that extracts text from Antigravity CLI steps.step_payload (raw protobuf)."""
 import sqlite3, sys
 
 
@@ -13,7 +13,7 @@ def varint(b, i):
 
 
 def walk(b, depth=0, out=None):
-    """length-delimited フィールドを再帰的に辿り、UTF-8として妥当な文字列を集める"""
+    """Walk length-delimited fields recursively, collecting valid UTF-8 strings."""
     if out is None:
         out = []
     i = 0

@@ -1,27 +1,27 @@
-"""管理サーバ: 取り込み API と MCP を 1 プロセスで提供する。
+"""Aggregation server: the ingest API and MCP in one process.
 
-Docker サーバ側で動かす。各マシンのエージェントが `chist push` で正規化済みの
-データを POST し、各ツールは同じポートの `/mcp` を MCP で叩く。
+Runs on the Docker host. Agents on each machine POST normalised data with
+`chist push`, and tools reach MCP on `/mcp` at the same port.
 
-  POST /ingest   エージェントからの取り込み（bearer token 必須）
-  GET  /health   死活監視（認証なし）
-  GET  /stats    集計（bearer token 必須）
-  GET  /auth     Traefik forwardAuth 用の検証だけを行う（bearer token 必須）
+  POST /ingest   ingest from an agent (bearer token required)
+  GET  /health   liveness check (unauthenticated)
+  GET  /stats    aggregates (bearer token required)
+  GET  /auth     verification only, for the proxy's forwardAuth (bearer token required)
   POST /mcp      MCP 2026-07-28 (streamable HTTP)
-  GET  /         Web UI（Svelte SPA を単一 HTML にしたもの）
-  GET  /api/*    Web UI 用の読み取り API
+  GET  /         web UI (the Svelte SPA as a single HTML file)
+  GET  /api/*    read-only API for the web UI
 
-MCP のツール定義は chist.mcp_server と共有する。
+Tool definitions are shared with chist.mcp_server.
 
-**このアプリを単体で公開してはいけない。**
-`/mcp` は MCP SDK がルーティングを持つためこのモジュールの `_authorized` を通らない。
-`/` と `/api/*` はブラウザからの利用が前提で bearer token を要求できない。
-いずれもリバースプロキシ側で守る設計になっている（docker-compose.yml のラベル参照）。
+**Never expose this app on its own.**
+`/mcp` is routed by the MCP SDK, so it does not pass through `_authorized` here.
+`/` and `/api/*` are meant for browsers, which cannot send a bearer token. Both are
+protected at the reverse proxy instead (see the labels in docker-compose.yml).
 
-  /health              認証なし（ヘルスチェック）
-  /ingest /stats /mcp  forwardAuth → /auth で bearer token 検証
-  / と /api/*          basicauth
-  すべて               ipwhitelist で LAN 限定
+  /health              unauthenticated (health checks)
+  /ingest /stats /mcp  forwardAuth -> /auth verifies the bearer token
+  / and /api/*         basicauth
+  everything           restricted to the LAN by an IP allowlist
 """
 import argparse
 import hmac
@@ -40,7 +40,7 @@ from .mcp_server import server
 TOKEN = None
 _conn = None
 
-# 1 リクエストの上限。既定バッチ 500 件なら十分な余裕がある。
+# Per-request cap. The default batch of 500 messages fits with room to spare.
 MAX_BODY = 64 * 1024 * 1024
 
 
@@ -52,18 +52,18 @@ def _db():
 
 
 def _authorized(request: Request) -> bool:
-    # トークン未設定なら通す、という逃げ道は作らない（main で起動を止めている）。
+    # No 'allow when no token is set' escape hatch — main refuses to start instead.
     if not TOKEN:
         return False
     auth = request.headers.get('authorization', '')
     if not auth.startswith('Bearer '):
         return False
-    # 比較時間からトークンを推測されないようにする
+    # Constant-time compare so the token cannot be guessed from timing
     return hmac.compare_digest(auth[7:], TOKEN)
 
 
 def _items(payload, key):
-    """payload の配列フィールドを取り出す。壊れた形でも例外にしない。"""
+    """Pull an array field out of the payload. Malformed input yields [], never raises."""
     v = payload.get(key)
     if not isinstance(v, list):
         return []
@@ -81,10 +81,10 @@ async def health(request: Request):
 
 @server.custom_route('/auth', methods=['GET', 'POST'])
 async def auth(request: Request):
-    """Traefik forwardAuth 用。ヘッダだけ見て 200 か 401 を返す。
+    """For the proxy's forwardAuth: inspect the header and return 200 or 401.
 
-    MCP SDK が生やす `/mcp` はこのモジュールのルートではないため、
-    プロキシ側からここを叩いてもらうことで全体を保護する。
+    `/mcp` is created by the MCP SDK and is not a route of this module, so having the
+    proxy call this endpoint is what protects the whole surface.
     """
     if not _authorized(request):
         return JSONResponse({'error': 'unauthorized'}, status_code=401)
@@ -118,7 +118,7 @@ async def ingest(request: Request):
             'ON CONFLICT(host) DO UPDATE SET os=excluded.os, last_seen=excluded.last_seen',
             (host, os_name))
 
-    # セッションを先に確定させる。既存行の非 NULL 値は壊さない。
+    # Settle sessions first. Never clobber a non-NULL value on an existing row.
     sid = {}
     for s in _items(payload, 'sessions'):
         if not s.get('source') or not s.get('ext_id'):
@@ -136,7 +136,8 @@ async def ingest(request: Request):
             '                    COALESCE(sessions.started_at, excluded.started_at)),'
             '  ended_at    = MAX(COALESCE(excluded.ended_at, sessions.ended_at),'
             '                    COALESCE(sessions.ended_at, excluded.ended_at))',
-            # title は最初のユーザー発言が使われることがあるので本文と同じく必ずマスクする
+            # Some sources derive the title from the first user message, so it needs the
+            # same masking as the body.
             (s.get('source'), s.get('ext_id'), mask(s.get('title')), s.get('cwd'),
              s.get('git_branch'), host, s.get('project_key'),
              s.get('started_at'), s.get('ended_at')))
@@ -163,8 +164,8 @@ async def ingest(request: Request):
                      m.get('part') or 0, m.get('seq'), m.get('role'),
                      m.get('kind') or 'message', m.get('ts'), m.get('model'),
                      m.get('provider'),
-                     # 送信側も push でマスクしているが、--raw で素通しできてしまう。
-                     # 保存する前にここでも必ず通す。
+                     # The sender masks in push too, but --raw bypasses that. Always mask
+                     # again here, before anything is stored.
                      mask(m.get('text') or ''), None, None))
 
     accepted = 0
@@ -218,7 +219,7 @@ async def stats(request: Request):
 
 
 # ------------------------------------------------------------------ Web UI
-# ここから下は basicauth 前提。アプリ内では bearer token を要求しない。
+# Everything below assumes basicauth at the proxy; no bearer token is required here.
 
 WEB_INDEX = pathlib.Path(__file__).resolve().parent.parent / 'web' / 'index.html'
 _index_cache = None
@@ -238,11 +239,11 @@ def _int(request, name, default, lo=1, hi=200):
 
 @server.custom_route('/', methods=['GET'])
 async def index(request: Request):
-    """SPA を返す。ビルド成果物は単一 HTML なのでこの 1 ルートで足りる。"""
+    """Serve the SPA. The build output is a single HTML file, so one route suffices."""
     global _index_cache
     if _index_cache is None:
         if not WEB_INDEX.exists():
-            return JSONResponse({'error': 'Web UI が同梱されていません'}, status_code=404)
+            return JSONResponse({'error': 'web UI is not bundled in this image'}, status_code=404)
         _index_cache = WEB_INDEX.read_text(encoding='utf-8')
     return HTMLResponse(_index_cache)
 
@@ -252,7 +253,7 @@ async def api_search(request: Request):
     q = _str(request, 'q', '')
     if not q:
         return JSONResponse({'mode': '', 'count': 0, 'hits': [],
-                             'note': '検索語を入力してください。'})
+                             'note': 'Enter a search term.'})
     sources = [s for s in request.query_params.getlist('source') if s]
     hosts = [h for h in request.query_params.getlist('host') if h]
     rows, mode = search.search(
@@ -265,9 +266,10 @@ async def api_search(request: Request):
              'session_id': r['session_id'], 'excerpt': r['hit']} for r in rows]
     note = ''
     if mode == 'like':
-        note = '検索語が 3 文字未満のため、全文検索ではなく部分一致で検索しました。'
+        note = ('The query is under 3 characters, so a substring search was used '
+                'instead of the full-text index.')
     elif not hits:
-        note = '該当なし。語を短くするか絞り込みを外して再試行してください。'
+        note = 'No matches. Try a shorter term or remove some filters.'
     return JSONResponse({'mode': mode, 'count': len(hits), 'hits': hits, 'note': note})
 
 
@@ -288,16 +290,16 @@ async def api_sessions(request: Request):
 
 @server.custom_route('/api/session', methods=['GET'])
 async def api_session(request: Request):
-    """?id=<ext_id> で本文を返す。パスパラメータは使わず query で受ける。"""
+    """Return a conversation body via ?id=<ext_id>. Taken from the query, not the path."""
     ext_id = _str(request, 'id')
     if not ext_id:
-        return JSONResponse({'error': 'id が必要です'}, status_code=400)
+        return JSONResponse({'error': 'id is required'}, status_code=400)
     kinds = ['message'] + (['thinking'] if _str(request, 'thinking') else [])
-    # ext_id は (source, ext_id) でしか一意にならない。source が来ていれば使う。
+    # ext_id is only unique together with source, so use source when it is supplied.
     sess, msgs = search.show(_db(), ext_id, masked=True, kinds=kinds,
                              source=_str(request, 'source'))
     if not sess:
-        return JSONResponse({'error': 'セッションが見つかりません'}, status_code=404)
+        return JSONResponse({'error': 'session not found'}, status_code=404)
     offset = _int(request, 'offset', 0, lo=0, hi=10 ** 7)
     limit = _int(request, 'limit', 200, hi=1000)
     window = msgs[offset:offset + limit]
@@ -309,7 +311,7 @@ async def api_session(request: Request):
                     'messages': sess['msg_count']},
         'total': len(msgs), 'offset': offset, 'returned': len(window),
         'has_more': offset + len(window) < len(msgs),
-        # 同じ ext_id が別ソースにもある状態。source を付けて呼び直すと確定する。
+        # The same ext_id also exists in another source; re-call with source to pin it.
         'ambiguous': bool(sess.get('ambiguous')),
         'messages': [{'role': m['role'], 'kind': m['kind'], 'ts': m['ts'],
                       'model': m['model'], 'text': m['text']} for m in window],
@@ -323,11 +325,11 @@ async def api_stats(request: Request):
 
 def main(argv=None):
     global TOKEN
-    p = argparse.ArgumentParser(prog='chist-server', description='chist 管理サーバ')
+    p = argparse.ArgumentParser(prog='chist-server', description='chist aggregation server')
     p.add_argument('--host', default='0.0.0.0')
     p.add_argument('--port', type=int, default=8848)
-    p.add_argument('--db', help='既定は CHIST_DB か ~/.local/share/chist/history.db')
-    p.add_argument('--token', help='既定は環境変数 CHIST_TOKEN')
+    p.add_argument('--db', help='defaults to CHIST_DB or ~/.local/share/chist/history.db')
+    p.add_argument('--token', help='defaults to the CHIST_TOKEN environment variable')
     args = p.parse_args(argv)
 
     if args.db:
@@ -335,14 +337,15 @@ def main(argv=None):
     TOKEN = args.token or os.environ.get('CHIST_TOKEN')
     if not TOKEN:
         sys.stderr.write(
-            'CHIST_TOKEN が未設定です。履歴を無認証で公開しないため起動を中止します。\n'
-            '  openssl rand -hex 32 で生成して .env に設定してください。\n')
+            'CHIST_TOKEN is not set. Refusing to start rather than serve history '
+            'unauthenticated.\n'
+            '  Generate one with: openssl rand -hex 32\n')
         return 2
 
-    _db()  # 起動時にスキーマ作成・移行を済ませておく
+    _db()  # create or migrate the schema before serving
     sys.stderr.write('chist-server http://%s:%d  (MCP: /mcp, ingest: /ingest)\n'
                      % (args.host, args.port))
-    # 2026-07-28 でセッションが廃止されたため stateless で動かす
+    # 2026-07-28 removed protocol-level sessions, so run stateless
     server.run(transport='streamable-http', host=args.host, port=args.port,
                stateless_http=True)
     return 0

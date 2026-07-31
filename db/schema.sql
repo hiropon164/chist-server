@@ -1,31 +1,31 @@
--- chist-server — チャット履歴統合検索DB スキーマ
--- SQLite 3.34+ (trigram トークナイザ必須 / 実機は 3.51.0 で確認済み)
+-- chist — schema for the unified chat-history search database
+-- SQLite 3.34+ (the trigram tokenizer is required; verified on 3.51.0)
 --
--- 対象ソース: CLI 版 4 種のみ（Claude Code / Codex / Cursor CLI / Antigravity CLI）
---             GUI 版（Cursor GUI / Antigravity GUI）は今後検討。
---             ui 列と 'gui' の CHECK は将来の追加に備えて残してある。
+-- Sources: the four CLI tools only (Claude Code / Codex / Cursor CLI / Antigravity CLI).
+--          The GUI variants (Cursor GUI / Antigravity GUI) are under consideration;
+--          the ui column and its 'gui' CHECK are kept for that future addition.
 
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous  = NORMAL;
 PRAGMA foreign_keys = ON;
 
--- スキーマ版。chist/db.py が既存 DB との差分を見て移行する。
---   1: 単一マシン
---   2: 複数マシン集約（hosts / sessions.host / sessions.project_key）
+-- Schema version. chist/db.py migrates an existing database up to this.
+--   1: single machine
+--   2: multi-machine aggregation (hosts / sessions.host / sessions.project_key)
 PRAGMA user_version = 2;
 
 --------------------------------------------------------------------------------
--- 1. ソース定義
+-- 1. Source definitions
 --------------------------------------------------------------------------------
 
 CREATE TABLE sources (
-  source    TEXT PRIMARY KEY,                       -- 'claude-code' 等
+  source    TEXT PRIMARY KEY,                       -- e.g. 'claude-code'
   ui        TEXT NOT NULL CHECK (ui IN ('cli','gui')),
   label     TEXT NOT NULL,
-  root_path TEXT NOT NULL,                          -- 走査の起点
+  root_path TEXT NOT NULL,                          -- where scanning starts
 
-  -- モデル名をどの粒度で記録しているか。NULL が「未使用」なのか
-  -- 「記録なし」なのかを集計時に区別するために持つ。
+  -- At what granularity the source records a model name. Lets aggregation tell
+  -- "not used" apart from "not recorded" when the value is NULL.
   model_capture TEXT NOT NULL CHECK (model_capture IN ('per-message','per-turn','none'))
 );
 
@@ -35,12 +35,12 @@ INSERT INTO sources (source, ui, label, root_path, model_capture) VALUES
   ('cursor-cli',      'cli', 'Cursor Agent',    '~/.cursor/projects',                     'none'),
   ('antigravity-cli', 'cli', 'Antigravity CLI', '~/.gemini/antigravity-cli/conversations','per-turn');
 
--- 今後検討（GUI 版）。有効化するときはこの 2 行を INSERT に戻す。
+-- Under consideration (GUI variants). Move these two rows back into the INSERT to enable.
 --   ('cursor-gui',      'gui', 'Cursor',      '~/Library/Application Support/Cursor/User/globalStorage', 'none'),
 --   ('antigravity-gui', 'gui', 'Antigravity', '~/.gemini/antigravity',                                   'none');
 
 --------------------------------------------------------------------------------
--- 2. ホスト（複数マシン集約用）
+-- 2. Hosts (for multi-machine aggregation)
 --------------------------------------------------------------------------------
 
 CREATE TABLE hosts (
@@ -50,7 +50,7 @@ CREATE TABLE hosts (
 );
 
 --------------------------------------------------------------------------------
--- 3. セッション（会話単位）
+-- 3. Sessions (one conversation each)
 --------------------------------------------------------------------------------
 
 CREATE TABLE sessions (
@@ -58,15 +58,17 @@ CREATE TABLE sessions (
   source     TEXT NOT NULL REFERENCES sources(source),
   ext_id     TEXT NOT NULL,      -- sessionId / composerId / trajectory_id
   title      TEXT,               -- ai-title / thread_name / conversations.title / history.display
-  cwd        TEXT,               -- そのマシン上での作業ディレクトリ
+  cwd        TEXT,               -- working directory on that machine
   git_branch TEXT,
 
-  -- どのマシンで交わされた会話か。ログ側に記録がないためエージェントが付与する。
+  -- Which machine the conversation happened on. The logs do not record it, so the
+  -- agent supplies it.
   host       TEXT REFERENCES hosts(host),
 
-  -- マシンを跨いでプロジェクトを同定する鍵。git remote URL を正規化したもの。
-  -- remote がなければ basename(cwd)。`git -C <cwd> remote get-url origin` は
-  -- そのリポジトリがあるマシンでしか実行できないため、必ず取り込み側で解決する。
+  -- Key that identifies a project across machines: the git remote URL, normalised.
+  -- Falls back to basename(cwd) when there is no remote. `git -C <cwd> remote get-url
+  -- origin` only works on the machine holding the repository, so it must be resolved
+  -- on the ingest side.
   project_key TEXT,
 
   started_at TEXT,               -- ISO8601 (UTC)
@@ -81,51 +83,51 @@ CREATE INDEX ix_sessions_title   ON sessions(title);
 CREATE INDEX ix_sessions_project ON sessions(project_key);
 CREATE INDEX ix_sessions_host    ON sessions(host);
 
--- host / project_key を sessions のみに持たせ、messages には置かない。
--- UNIQUE (source, ext_id, part) により、外付けドライブ経由で同じログが複数マシンから
--- 見えても 1 行に収束する。その 1 行が属するセッションは 1 つなので、
--- host は本質的にセッション単位の属性になる。
+-- host and project_key live on sessions only, never on messages.
+-- UNIQUE (source, ext_id, part) collapses the same log seen from several machines
+-- (e.g. via an external drive) into one row. That row belongs to exactly one session,
+-- so host is inherently a per-session attribute.
 
 --------------------------------------------------------------------------------
--- 4. メッセージ（検索の主対象）
+-- 4. Messages (the main search target)
 --------------------------------------------------------------------------------
 
 CREATE TABLE messages (
   id         INTEGER PRIMARY KEY,
   session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
 
-  -- 非正規化（FTS 結果からの絞り込みを 1 テーブルで完結させるため）
+  -- Denormalised so filtering an FTS result never needs a second table
   source     TEXT NOT NULL,
   cwd        TEXT,
 
-  -- 同一メッセージの再取り込みを弾く自然キー。
+  -- Natural key that rejects re-ingesting the same message.
   --   claude-code     : uuid
-  --   codex           : <session_id>:<行番号>
-  --   cursor-cli      : <transcript_id>:<行番号>
+  --   codex           : <session_id>:<line number>
+  --   cursor-cli      : <transcript_id>:<line number>
   --   antigravity-cli : <trajectory_id>:<steps.idx>
-  -- いずれも UUID 由来でグローバルに一意。将来マシンを跨いで集約する場合も
-  -- この鍵に host を含めなければ重複が自動で吸収される（外付けドライブ対策）。
+  -- All are UUID-derived and globally unique. Keeping host out of this key means
+  -- duplicates are absorbed automatically when aggregating across machines.
   ext_id     TEXT NOT NULL,
-  part       INTEGER NOT NULL DEFAULT 0,  -- 1レコードが複数ブロックに分かれる場合の連番
+  part       INTEGER NOT NULL DEFAULT 0,  -- sequence when one record splits into blocks
 
-  seq        INTEGER,            -- 会話内の表示順
+  seq        INTEGER,            -- display order within the conversation
   role       TEXT CHECK (role IN ('user','assistant','system','tool')),
   kind       TEXT NOT NULL DEFAULT 'message'
              CHECK (kind IN ('message','thinking','tool_call','tool_result','artifact')),
   ts         TEXT,               -- ISO8601 (UTC)
 
-  -- 生のモデル名（claude-opus-5 / gpt-5.5 / gemini-3.5-flash-low 等）。
-  -- cursor-cli は記録がないため常に NULL（sources.model_capture='none'）。
+  -- Raw model name (claude-opus-5 / gpt-5.5 / gemini-3.5-flash-low, ...).
+  -- Always NULL for cursor-cli, which records none (sources.model_capture='none').
   model      TEXT,
-  -- 'cursor' は Composer（Anysphere 自社モデル）。Cursor は multi-provider で
-  -- かつ履歴にモデル名を残さないため、実データ上は 'unknown' になる。
+  -- 'cursor' means Composer (Anysphere's own model). Cursor is multi-provider and
+  -- records no model name, so real data ends up as 'unknown'.
   provider   TEXT CHECK (provider IN ('anthropic','openai','google','cursor','unknown')),
 
   text       TEXT NOT NULL,
 
-  -- 再取り込み・原文参照用のポインタ（本文の重複保存はしない）
+  -- Pointer back to the source, for re-ingest and source lookup (the body is not duplicated)
   src_path   TEXT,
-  src_pos    INTEGER,            -- JSONL: バイトオフセット / SQLite: steps.idx
+  src_pos    INTEGER,            -- JSONL: byte offset / SQLite: steps.idx
 
   UNIQUE (source, ext_id, part)
 );
@@ -137,11 +139,11 @@ CREATE INDEX ix_messages_src_ts  ON messages(source, ts DESC);
 CREATE INDEX ix_messages_model   ON messages(model) WHERE model IS NOT NULL;
 
 --------------------------------------------------------------------------------
--- 5. 全文検索インデックス
+-- 5. Full-text index
 --------------------------------------------------------------------------------
--- trigram: 日本語を扱うため必須。既定の unicode61 は空白区切りのため
---          「チャット履歴」が 1 トークンになり部分一致しない。
--- content=: 外部コンテンツ方式。本文を二重に持たないためサイズを抑える。
+-- trigram: required for CJK. The default unicode61 splits on whitespace, so a phrase
+--          with no spaces becomes a single token and substrings never match.
+-- content=: external-content form, so the body is not stored twice.
 
 CREATE VIRTUAL TABLE messages_fts USING fts5(
   text,
@@ -150,8 +152,8 @@ CREATE VIRTUAL TABLE messages_fts USING fts5(
   tokenize     = 'trigram'
 );
 
--- tool_call / tool_result は巨大かつノイズになりやすいので索引対象から外す。
--- 検索したくなったら WHEN 句を広げて 'rebuild' すればよい。
+-- tool_call / tool_result are large and noisy, so they stay out of the index.
+-- To search them, widen the WHEN clauses and 'rebuild'.
 CREATE TRIGGER messages_fts_ai AFTER INSERT ON messages
 WHEN new.kind IN ('message','thinking','artifact')
 BEGIN
@@ -172,19 +174,20 @@ BEGIN
 END;
 
 --------------------------------------------------------------------------------
--- 6. 取り込み状態（差分取り込み用）
+-- 6. Ingest state (for incremental ingest)
 --------------------------------------------------------------------------------
 
 CREATE TABLE ingest_state (
   source     TEXT NOT NULL REFERENCES sources(source),
   path       TEXT NOT NULL,
 
-  cursor     INTEGER NOT NULL DEFAULT 0,  -- 次に読む位置
-                                          --   JSONL : 読み終えたバイトオフセット
-                                          --   AG-CLI: 取り込み済み steps.idx の最大値
-  size       INTEGER,                     -- 前回の st_size
-  mtime      REAL,                        -- 前回の st_mtime
-  head_sha   TEXT,                        -- 先頭4KBのSHA256。書き換え検知 → 全再取り込み
+  cursor     INTEGER NOT NULL DEFAULT 0,  -- where to resume
+                                          --   JSONL : byte offset already read
+                                          --   AG-CLI: highest steps.idx ingested
+  size       INTEGER,                     -- st_size last time
+  mtime      REAL,                        -- st_mtime last time
+  head_sha   TEXT,                        -- SHA256 of the first 4 KB; a change means
+                                          -- the file was rewritten -> full re-ingest
 
   ok_count   INTEGER NOT NULL DEFAULT 0,
   err_count  INTEGER NOT NULL DEFAULT 0,
@@ -192,7 +195,7 @@ CREATE TABLE ingest_state (
   PRIMARY KEY (source, path)
 );
 
--- パースに失敗した行の記録（握り潰さない）
+-- Lines that failed to parse (never silently dropped)
 CREATE TABLE ingest_errors (
   id       INTEGER PRIMARY KEY,
   source   TEXT NOT NULL,
@@ -203,7 +206,7 @@ CREATE TABLE ingest_errors (
 );
 
 --------------------------------------------------------------------------------
--- 7. 検索用ビュー
+-- 7. Search views
 --------------------------------------------------------------------------------
 
 CREATE VIEW v_messages AS
@@ -214,15 +217,15 @@ FROM messages m
 JOIN sessions s ON s.id = m.session_id;
 
 --------------------------------------------------------------------------------
--- 8. クエリ例
+-- 8. Example queries
 --------------------------------------------------------------------------------
 --
--- 【重要】trigram は 3 文字未満のクエリを MATCH できない（実測で確認済み）。
---   '履歴'   (2文字) -> 0 件
---   'チャット' (4文字) -> ヒット
--- 2 文字以下の検索語はアプリ側で LIKE にフォールバックさせること。
+-- IMPORTANT: trigram cannot MATCH a query shorter than 3 characters (measured).
+--   a 2-character term -> 0 rows
+--   a 4-character term -> matches
+-- The application must fall back to LIKE for anything shorter.
 --
---   -- 全文検索（3文字以上）
+--   -- full-text search (3+ characters)
 --   SELECT m.id, m.source, m.role, m.ts, s.title,
 --          snippet(messages_fts, 0, '[', ']', '…', 12) AS hit
 --   FROM messages_fts f
@@ -232,44 +235,44 @@ JOIN sessions s ON s.id = m.session_id;
 --   ORDER BY bm25(messages_fts)
 --   LIMIT 50;
 --
---   -- 2文字以下のフォールバック
+--   -- fallback for shorter queries
 --   SELECT id, source, role, ts, text FROM messages
 --   WHERE text LIKE '%' || ? || '%' ORDER BY ts DESC LIMIT 50;
 --
---   -- プロジェクト横断（どのツールで何を話したか）
+--   -- across a project (which tool discussed what)
 --   SELECT source, COUNT(*) AS n, MIN(ts) AS first, MAX(ts) AS last
 --   FROM messages WHERE cwd = ? GROUP BY source ORDER BY n DESC;
 --
---   -- 期間 + ソース絞り込み付きの全文検索
+--   -- full-text search filtered by time range and source
 --   SELECT m.id, m.ts, snippet(messages_fts, 0, '[', ']', '…', 12)
 --   FROM messages_fts f JOIN messages m ON m.id = f.rowid
 --   WHERE messages_fts MATCH ? AND m.source IN ('claude-code','codex') AND m.ts >= ?
 --   ORDER BY bm25(messages_fts) LIMIT 50;
 --
---   -- 索引対象 kind を広げた場合の再構築
+--   -- rebuild after widening the indexed kinds
 --   INSERT INTO messages_fts(messages_fts) VALUES ('rebuild');
---   -- ※ rebuild は content テーブルの全行を索引するため、
---   --    kind による選別は効かなくなる点に注意。
+--   -- NOTE: rebuild indexes every row of the content table, so the kind
+--   --       filtering no longer applies.
 
 --------------------------------------------------------------------------------
--- 9. 送信状態（エージェント側のみ使用）
+-- 9. Push state (agent side only)
 --------------------------------------------------------------------------------
--- 各マシンのローカル DB が、どの宛先へどこまで送ったかを覚えておく。
--- サーバ側の DB では使わない。
+-- Each machine's local database remembers how far it has pushed to each endpoint.
+-- Unused in the server-side database.
 
 CREATE TABLE push_state (
   endpoint   TEXT PRIMARY KEY,   -- 'http://192.168.1.10:8848'
-  last_id    INTEGER NOT NULL DEFAULT 0,  -- 送信済み messages.id の最大値
+  last_id    INTEGER NOT NULL DEFAULT 0,  -- highest messages.id already sent
   sent       INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT
 );
 
 --------------------------------------------------------------------------------
--- 10. 今後検討
+-- 10. Under consideration
 --------------------------------------------------------------------------------
 --
--- GUI 版の追加:
---   sources に 'cursor-gui' / 'antigravity-gui' を INSERT するだけで足りる。
---   ext_id の規約:
---     cursor-gui      : bubbleId:<composerId>:<bubbleId>  ← cursorDiskKV のキーそのまま
---     antigravity-gui : <conv-id>:<brain ファイル名>       ← 本文は暗号化のため要約のみ
+-- Adding the GUI variants:
+--   Inserting 'cursor-gui' / 'antigravity-gui' into sources is all that is needed.
+--   ext_id conventions:
+--     cursor-gui      : bubbleId:<composerId>:<bubbleId>  (the cursorDiskKV key as-is)
+--     antigravity-gui : <conv-id>:<brain filename>  (bodies are encrypted; summary only)

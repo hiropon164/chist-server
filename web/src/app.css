@@ -1,7 +1,7 @@
-/* 配色は dataviz スキルの参照パレットに準拠。
-   カテゴリ 4 色（blue / orange / aqua / yellow）は adjacent 基準で light・dark
-   とも全チェック PASS。all-pairs では yellow↔orange が floor を割るため、
-   ソース色は必ずテキストラベルと併用する（色単独で識別させない）。 */
+/* The four categorical hues (blue / orange / aqua / yellow) pass every contrast
+   and colour-vision check against both surfaces on the adjacent-pair list.
+   On the all-pairs list yellow and orange fall under the floor, so a source
+   colour is always paired with its text label — colour never identifies alone. */
 
 :root {
   color-scheme: light;

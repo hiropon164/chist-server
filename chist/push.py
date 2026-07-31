@@ -1,11 +1,11 @@
-"""エージェント側: ローカル DB の差分を管理サーバへ送る。
+"""Agent side: send the local delta to the aggregation server.
 
-依存ゼロ（urllib）で動く。各マシンに配るのはこちら側なので、
-MCP SDK には依存させない。
+Dependency-free (urllib only). This is the half distributed to each machine, so it
+must never require the MCP SDK.
 
-送るのは検索対象になる kind（message / thinking / artifact）だけ。
-tool_call / tool_result は全体の 7 割を占めるうえ FTS 索引の対象外なので、
-既定では送らない（--include-tools で変更できる）。
+Only the searchable kinds are sent (message / thinking / artifact). tool_call and
+tool_result make up about 70% of all rows and are not in the FTS index, so they are
+omitted by default (--include-tools overrides).
 """
 import json
 import time
@@ -20,11 +20,11 @@ BATCH = 500
 
 
 class PushError(RuntimeError):
-    """送信に失敗した。呼び出し側で捕まえて終了コードに変える。"""
+    """A push failed. Callers catch this and turn it into an exit code."""
 
 
 def _post(endpoint, path, token, payload, timeout=60, retries=3):
-    """1 バッチを送る。一時的な失敗は間隔を空けて数回だけ再試行する。"""
+    """Send one batch, retrying a few times with backoff on transient failures."""
     body = json.dumps(payload, ensure_ascii=False).encode('utf-8')
     last = None
     for attempt in range(retries):
@@ -37,23 +37,22 @@ def _post(endpoint, path, token, payload, timeout=60, retries=3):
                 return json.loads(r.read().decode('utf-8'))
         except urllib.error.HTTPError as e:
             detail = e.read().decode('utf-8', 'replace')[:200]
-            # 認証エラーや 4xx は何度投げても同じなので即座に諦める
+            # Auth errors and other 4xx will not change on retry, so give up at once
             if e.code in (401, 403):
-                raise PushError('認証に失敗しました (%s)。CHIST_TOKEN を確認してください。'
-                                % e.code)
+                raise PushError('Authentication failed (%s). Check CHIST_TOKEN.' % e.code)
             if 400 <= e.code < 500:
-                raise PushError('サーバが受け付けませんでした (%s): %s' % (e.code, detail))
+                raise PushError('The server rejected the request (%s): %s' % (e.code, detail))
             last = 'HTTP %s: %s' % (e.code, detail)
         except (urllib.error.URLError, OSError, ValueError) as e:
             last = str(e)
         if attempt < retries - 1:
             time.sleep(2 ** attempt)
-    raise PushError('%s へ送信できませんでした: %s' % (endpoint, last))
+    raise PushError('Could not send to %s: %s' % (endpoint, last))
 
 
 def _sessions_for(conn, ids, masked=True):
-    """送信するセッション情報。title は最初のユーザー発言から作られることがあり、
-    本文と同じだけ秘密が混じりうるので、本文と同様にマスクしてから出す。"""
+    """Session rows to send. Some sources derive the title from the first user message,
+    so it can carry the same secrets as the body and is masked the same way."""
     if not ids:
         return []
     q = ('SELECT id, source, ext_id, title, cwd, git_branch, project_key,'
@@ -71,7 +70,7 @@ def _sessions_for(conn, ids, masked=True):
 
 def push(conn, endpoint, token, kinds=DEFAULT_KINDS, masked=True,
          reset=False, progress=None, limit=None):
-    """未送信の messages を順に送る。統計 dict を返す。"""
+    """Send unsent messages in batches. Returns a stats dict."""
     info = project.host_info()
 
     row = conn.execute('SELECT last_id FROM push_state WHERE endpoint = ?',
@@ -109,7 +108,7 @@ def push(conn, endpoint, token, kinds=DEFAULT_KINDS, masked=True,
                 'session_ext_id': key[1], 'seq': r['seq'], 'role': r['role'],
                 'kind': r['kind'], 'ts': r['ts'], 'model': r['model'],
                 'provider': r['provider'], 'cwd': r['cwd'],
-                # ネットワークに出す前にマスクする
+                # Mask before it leaves the machine
                 'text': mask(r['text'], masked),
             })
 

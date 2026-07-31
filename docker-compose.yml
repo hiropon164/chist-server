@@ -1,15 +1,15 @@
-# chist 管理サーバ
+# chist aggregation server
 #
 #   cp .env.example .env && vi .env
 #   docker compose up -d --build
 #
-# 既存 Traefik 経由で公開する。ホスト側にポートは開けない。
+# Published through an existing Traefik. No host port is opened.
 #
-# ルータを 3 つに分けている。到達経路ごとに必要な認証が違うため。
-#   chist-health  /health のみ         認証なし（監視用）
-#   chist-agent   /ingest /mcp /stats  forwardAuth → /auth で bearer token
-#   chist-web     それ以外（/ と /api）basicauth（ブラウザ用）
-# いずれも ipallowlist で送信元を限定する。
+# Three routers, because each path needs a different kind of authentication:
+#   chist-health  /health only          none (for monitoring)
+#   chist-agent   /ingest /mcp /stats   forwardAuth -> /auth checks the bearer token
+#   chist-web     everything else       basicauth (for browsers)
+# All three are restricted by source IP with ipallowlist.
 services:
   chist:
     build: .
@@ -17,34 +17,34 @@ services:
     container_name: chist-server
     restart: unless-stopped
     environment:
-      CHIST_TOKEN: ${CHIST_TOKEN:?CHIST_TOKEN を .env に設定してください}
+      CHIST_TOKEN: ${CHIST_TOKEN:?set CHIST_TOKEN in .env}
       CHIST_DB: /data/history.db
       TZ: ${TZ:-UTC}
     volumes:
       - chist-data:/data
     networks:
       - traefik
-    # ports: は書かない。Traefik が同一ネットワーク内から 8848 へ直接繋ぐ。
+    # No ports: Traefik reaches 8848 directly from within the same network.
     labels:
       - traefik.enable=true
       - traefik.docker.network=${CHIST_NETWORK:-traefik}
 
-      # --- 共通のサービス定義 ---
+      # --- shared service definition ---
       - traefik.http.services.chist.loadbalancer.server.port=8848
-      # Traefik 側のヘルスチェック（コンテナの HEALTHCHECK とは別物）。
-      # ミドルウェアを通らないので認証で弾かれることはない。
+      # Traefik's own health check (separate from the container HEALTHCHECK).
+      # It bypasses middleware, so authentication never blocks it.
       - traefik.http.services.chist.loadbalancer.healthcheck.path=/health
       - traefik.http.services.chist.loadbalancer.healthcheck.interval=30s
 
-      # --- 1. /health（認証なし） ---
-      - traefik.http.routers.chist-health.rule=Host(`${CHIST_HOST:?CHIST_HOST を .env に設定してください}`) && Path(`/health`)
+      # --- 1. /health (unauthenticated) ---
+      - traefik.http.routers.chist-health.rule=Host(`${CHIST_HOST:?set CHIST_HOST in .env}`) && Path(`/health`)
       - traefik.http.routers.chist-health.entrypoints=${CHIST_ENTRYPOINT:-websecure}
-      - traefik.http.routers.chist-health.tls.certresolver=${CHIST_CERTRESOLVER:?CHIST_CERTRESOLVER を .env に設定してください}
+      - traefik.http.routers.chist-health.tls.certresolver=${CHIST_CERTRESOLVER:?set CHIST_CERTRESOLVER in .env}
       - traefik.http.routers.chist-health.service=chist
       - traefik.http.routers.chist-health.middlewares=chist-allow
       - traefik.http.routers.chist-health.priority=300
 
-      # --- 2. エージェント用（bearer token） ---
+      # --- 2. agents (bearer token) ---
       - traefik.http.routers.chist-agent.rule=Host(`${CHIST_HOST}`) && (PathPrefix(`/ingest`) || PathPrefix(`/mcp`) || PathPrefix(`/stats`))
       - traefik.http.routers.chist-agent.entrypoints=${CHIST_ENTRYPOINT:-websecure}
       - traefik.http.routers.chist-agent.tls.certresolver=${CHIST_CERTRESOLVER}
@@ -52,7 +52,7 @@ services:
       - traefik.http.routers.chist-agent.middlewares=chist-allow,chist-auth
       - traefik.http.routers.chist-agent.priority=200
 
-      # --- 3. Web UI と API（basicauth） ---
+      # --- 3. web UI and API (basicauth) ---
       - traefik.http.routers.chist-web.rule=Host(`${CHIST_HOST}`)
       - traefik.http.routers.chist-web.entrypoints=${CHIST_ENTRYPOINT:-websecure}
       - traefik.http.routers.chist-web.tls.certresolver=${CHIST_CERTRESOLVER}
@@ -60,20 +60,20 @@ services:
       - traefik.http.routers.chist-web.middlewares=chist-allow,chist-basicauth
       - traefik.http.routers.chist-web.priority=100
 
-      # --- ミドルウェア ---
-      # 到達を許可する送信元。ルータの外から来る IP で判定される。
+      # --- middleware ---
+      # Allowed source ranges, matched against the IP arriving at the router.
       - traefik.http.middlewares.chist-allow.ipallowlist.sourcerange=${CHIST_ALLOW:-127.0.0.1/32}
 
-      # /mcp は MCP SDK 側のルートで、アプリの _authorized を通らない。
-      # forwardAuth で /auth に投げて bearer token を検証させる。
+      # /mcp is routed by the MCP SDK and never reaches the app's _authorized, so
+      # forwardAuth sends it to /auth to have the bearer token verified.
       - traefik.http.middlewares.chist-auth.forwardauth.address=http://chist-server:8848/auth
 
-      # ブラウザは bearer token を送れないので basicauth で守る。
-      # ハッシュは htpasswd -nbB で生成し .env に置く（.env ではエスケープ不要）。
-      - traefik.http.middlewares.chist-basicauth.basicauth.users=${CHIST_BASICAUTH:?CHIST_BASICAUTH を .env に設定してください}
+      # Browsers cannot send a bearer token, so basicauth guards them.
+      # Generate the hash with htpasswd -nbB and put it in .env (no escaping needed there).
+      - traefik.http.middlewares.chist-basicauth.basicauth.users=${CHIST_BASICAUTH:?set CHIST_BASICAUTH in .env}
 
-      # Traefik は既定でレスポンスをバッファしないので MCP の streamable HTTP は
-      # そのまま流れる。buffering ミドルウェアを当てないこと（当てるとハングする）。
+      # Traefik does not buffer responses by default, so MCP's streamable HTTP passes
+      # straight through. Do not attach a buffering middleware — it will hang.
 
 networks:
   traefik:

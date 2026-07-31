@@ -4,7 +4,7 @@
   let { source } = $props()
 </script>
 
-<!-- 色は補助。ラベルを必ず併記して、色単独で識別させない -->
+<!-- Colour is secondary. The label is always present so colour alone never carries meaning. -->
 <span class="badge slot-{sourceSlot(source)}">
   <span class="dot" aria-hidden="true"></span>{sourceLabel(source)}
 </span>

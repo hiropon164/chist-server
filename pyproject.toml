@@ -1,14 +1,26 @@
 [project]
 name = "chist"
 version = "0.1.0"
-description = "CLI チャット履歴の統合検索（Claude Code / Codex / Cursor CLI / Antigravity CLI）"
+description = "Unified full-text search across Claude Code / Codex / Cursor CLI / Antigravity CLI chat history"
+readme = "README.md"
 requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Hiroshi Hasegawa" }]
+keywords = ["claude-code", "codex", "cursor", "chat-history", "sqlite", "fts5", "mcp"]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Topic :: Utilities",
+]
 dependencies = []
 
-# 取り込み・検索・CLI は依存ゼロ（Python 3.9 標準ライブラリのみ）で動く。
-# MCP サーバだけが公式 SDK を必要とし、SDK が Python 3.10+ を要求する。
+# Ingest, search and the CLI run with no dependencies (Python 3.9 stdlib only).
+# Only the MCP server needs the official SDK, which itself requires Python 3.10+.
+# The upper bound matches the pip install in the Dockerfile: the API changes across
+# major versions.
 [project.optional-dependencies]
-mcp = ["mcp>=2.0.0"]
+mcp = ["mcp>=2.0.0,<3"]
 
 [project.scripts]
 chist = "chist.cli:main"

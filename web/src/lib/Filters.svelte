@@ -19,7 +19,7 @@
 </script>
 
 <div class="filters">
-  <div class="sources" role="group" aria-label="ソースで絞り込む">
+  <div class="sources" role="group" aria-label="Filter by source">
     {#each SOURCES as s (s.id)}
       <button
         type="button"
@@ -33,9 +33,9 @@
     {/each}
   </div>
 
-  <!-- 1 台しか無いうちは絞る意味がないので出さない -->
+  <!-- Pointless to filter with only one machine, so hide it -->
   {#if hosts.length > 1}
-    <div class="sources" role="group" aria-label="マシンで絞り込む">
+    <div class="sources" role="group" aria-label="Filter by machine">
       {#each hosts as h (h)}
         <button
           type="button"
@@ -52,10 +52,10 @@
 
   <div class="row">
     <label>
-      <span>プロジェクト</span>
+      <span>Project</span>
       <input
         type="search"
-        placeholder="パスの一部"
+        placeholder="part of the path"
         bind:value={filters.cwd}
         onchange={() => onapply?.()}
       />
@@ -63,9 +63,9 @@
 
     {#if showRole}
       <label>
-        <span>ロール</span>
+        <span>Role</span>
         <select bind:value={filters.role} onchange={() => onapply?.()}>
-          <option value="">すべて</option>
+          <option value="">All</option>
           <option value="user">user</option>
           <option value="assistant">assistant</option>
           <option value="system">system</option>
@@ -75,19 +75,19 @@
     {/if}
 
     <label>
-      <span>期間（開始）</span>
+      <span>From</span>
       <input type="date" bind:value={filters.since} onchange={() => onapply?.()} />
     </label>
 
     {#if showRole}
       <label>
-        <span>期間（終了）</span>
+        <span>To</span>
         <input type="date" bind:value={filters.until} onchange={() => onapply?.()} />
       </label>
     {/if}
 
     <label>
-      <span>件数</span>
+      <span>Limit</span>
       <select bind:value={filters.limit} onchange={() => onapply?.()}>
         <option value={20}>20</option>
         <option value={30}>30</option>
@@ -159,7 +159,7 @@
     background: var(--series-4);
   }
 
-  /* マシン名は色で区別しない（増減するため）。書体で系統を分ける */
+  /* Machines are not colour-coded: the set changes. Distinguish them by typeface. */
   .chip.host {
     padding: 4px 12px;
     font-family: var(--mono);

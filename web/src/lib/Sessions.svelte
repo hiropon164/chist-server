@@ -38,26 +38,26 @@
   {#if error}
     <p class="msg error">{error}</p>
   {:else if loading}
-    <p class="msg">読み込み中…</p>
+    <p class="msg">Loading…</p>
   {:else if data?.sessions.length}
-    <p class="msg">{data.count} セッション（新しい順）</p>
+    <p class="msg">{data.count} sessions (newest first)</p>
     <div class="tablewrap">
       <table>
         <thead>
           <tr>
-            <th>ソース</th>
-            <th>タイトル</th>
-            <th>プロジェクト</th>
-            {#if hosts.length > 1}<th>マシン</th>{/if}
-            <th class="num">件数</th>
-            <th>最終</th>
+            <th>Source</th>
+            <th>Title</th>
+            <th>Project</th>
+            {#if hosts.length > 1}<th>Machine</th>{/if}
+            <th class="num">Msgs</th>
+            <th>Last</th>
           </tr>
         </thead>
         <tbody>
           {#each data.sessions as s (s.source + s.id)}
             <tr onclick={() => onopen({ id: s.id, source: s.source })} tabindex="0" role="button">
               <td><SourceBadge source={s.source} /></td>
-              <td class="title">{s.title || '（無題）'}</td>
+              <td class="title">{s.title || '(untitled)'}</td>
               <td class="cwd" title={s.cwd}>{shortPath(s.cwd) || '—'}</td>
               {#if hosts.length > 1}<td class="cwd">{s.host || '—'}</td>{/if}
               <td class="num">{formatNumber(s.messages)}</td>
@@ -68,7 +68,7 @@
       </table>
     </div>
   {:else}
-    <p class="msg empty">該当するセッションがありません。</p>
+    <p class="msg empty">No sessions match.</p>
   {/if}
 </section>
 

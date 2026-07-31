@@ -1,9 +1,9 @@
-"""ソース別アダプタのレジストリ。
+"""Registry of per-source adapters.
 
-各アダプタは以下を提供する。
-  SOURCE           : sources.source と一致する識別子
-  discover()       : 走査対象のファイルパス列
-  parse(path, off) : (Sess列, Msg列, 次オフセット, エラー列)
+Each adapter provides:
+  SOURCE           : identifier matching sources.source
+  discover()       : the file paths to scan
+  parse(path, off) : (sessions, messages, next offset, errors)
 """
 from . import antigravity_cli, claude_code, codex, cursor_cli
 

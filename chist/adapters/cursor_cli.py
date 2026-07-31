@@ -1,9 +1,9 @@
 """Cursor CLI: ~/.cursor/projects/<cwd-encoded>/agent-transcripts/<id>/<id>.jsonl
 
-制約が二つある。
-  - タイムスタンプが記録されていない。セッションの期間はファイルの mtime で代用し、
-    メッセージの ts は NULL のままにする。
-  - モデル名も記録されていない（sources.model_capture = 'none'）。
+Two limitations:
+  - No timestamps are recorded. Session spans fall back to the file mtime and each
+    message keeps ts NULL.
+  - No model name either (sources.model_capture = 'none').
 """
 import glob
 import os
@@ -22,19 +22,19 @@ def discover():
 
 
 def _cwd_from_path(path):
-    """`Users-you-Desktop-example` のようなディレクトリ名から cwd を復元する。
+    """Recover a cwd from a directory name such as `Users-alice-Desktop-myapp`.
 
-    '-' 区切りのため元のパスにハイフンが含まれると曖昧になる。
-    実在するパスを優先し、無ければ素朴な復元結果を返す。
+    Segments are joined with '-', so a hyphen in the original path is ambiguous.
+    Prefer a path that actually exists, otherwise return the naive reconstruction.
     """
     rel = os.path.relpath(path, ROOT)
     enc = rel.split(os.sep)[0]
     if enc.isdigit():
-        return None  # ワークスペース未確定のプロジェクト
+        return None  # project without a settled workspace
     naive = '/' + enc.replace('-', '/')
     if os.path.isdir(naive):
         return naive
-    # 末尾から順にハイフンを結合し直して実在するものを探す
+    # Re-join hyphens from the end, looking for a path that exists
     parts = enc.split('-')
     for join_at in range(len(parts) - 1, 0, -1):
         cand = '/' + '/'.join(parts[:join_at]) + '/' + '-'.join(parts[join_at:])
@@ -81,7 +81,7 @@ def parse(path, start=0):
                             provider='unknown', session_ext_id=sid))
             part += 1
 
-        # 最初のユーザー発言をタイトルの代わりにする
+        # Use the first user message in place of a title
         if not sess.title and role == 'user' and msgs:
             lines = msgs[-1].text.strip().splitlines()
             if lines:

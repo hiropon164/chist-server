@@ -1,14 +1,14 @@
-"""chist の MCP サーバ。
+"""MCP server for chist.
 
-MCP 2026-07-28 対応。公式 Python SDK (`mcp` 2.x) に依存する唯一のモジュールで、
-`chist.search` / `chist.db` を薄く包むだけ。取り込み側（`chist ingest`）は
-依存ゼロのまま保つ。
+Implements MCP 2026-07-28. This is the only module that depends on the official
+Python SDK (`mcp` 2.x); it is a thin wrapper over `chist.search` / `chist.db`.
+The ingest side (`chist ingest`) stays dependency-free.
 
   stdio            python -m chist.mcp_server
   streamable HTTP  python -m chist.mcp_server --transport streamable-http --port 8848
 
-2026-07-28 で `initialize` ハンドシェイクとセッションが廃止されたため、
-このサーバは完全にステートレス。読み取り専用でリクエスト間の状態を持たない。
+2026-07-28 dropped the `initialize` handshake and protocol-level sessions, so this
+server is fully stateless: read-only, with no state carried between requests.
 """
 import argparse
 import os
@@ -22,7 +22,7 @@ from . import db, search
 
 
 class Hit(TypedDict):
-    """検索でヒットした 1 メッセージ。"""
+    """One message matched by a search."""
     id: int
     source: str
     role: str
@@ -30,15 +30,16 @@ class Hit(TypedDict):
     model: Optional[str]
     cwd: Optional[str]
     session_title: Optional[str]
-    session_id: Optional[str]   # get_session にそのまま渡せる ext_id
+    session_id: Optional[str]   # ext_id, ready to pass straight to get_session
     excerpt: str
 
 
 class SearchResult(TypedDict):
-    mode: str           # 'fts'（全文検索）か 'like'（部分一致）
+    mode: str           # 'fts' (full-text index) or 'like' (substring fallback)
     count: int
     hits: List[Hit]
-    note: str           # 補足。なければ空文字（NotRequired だと SDK が default=None を入れ検証に落ちる）
+    note: str           # extra remarks, empty when none (NotRequired makes the SDK
+                        # insert default=None, which then fails validation)
 
 
 class SessionInfo(TypedDict):
@@ -47,7 +48,7 @@ class SessionInfo(TypedDict):
     title: Optional[str]
     cwd: Optional[str]
     git_branch: Optional[str]
-    host: Optional[str]      # どのマシンで交わした会話か
+    host: Optional[str]      # which machine the conversation happened on
     started_at: Optional[str]
     ended_at: Optional[str]
     messages: int
@@ -74,7 +75,8 @@ class SessionBody(TypedDict):
     has_more: bool
     messages: List[Turn]
 
-# ツール一覧は静的なので長めに、共有中間者もキャッシュ可 ('public')。
+# The tool list is static, so cache it generously and let shared intermediaries
+# cache it too ('public').
 CACHE_HINTS = {
     'tools/list': CacheHint(ttl_ms=3_600_000, scope='public'),
     'server/discover': CacheHint(ttl_ms=3_600_000, scope='public'),
@@ -83,19 +85,19 @@ CACHE_HINTS = {
 READ_ONLY = ToolAnnotations(read_only_hint=True, destructive_hint=False,
                             idempotent_hint=True, open_world_hint=False)
 
-# 1 回の応答でモデルのコンテキストを埋め尽くさないための上限。
+# Caps so a single response cannot fill the model's context window.
 MAX_LIMIT = 100
 MAX_BODY_CHARS = 40_000
 
 server = MCPServer(
     name='chist',
-    title='CLI チャット履歴検索',
+    title='CLI chat history search',
     version='0.1.0',
     instructions=(
-        'Claude Code / Codex / Cursor CLI / Antigravity CLI の過去のチャット履歴を検索する。'
-        '「前にこの件をどう解決したか」「このプロジェクトで何を話したか」を調べるときに使う。'
-        'まず search_history で当たりをつけ、必要なら get_session で本文を読む。'
-        '結果は既定でシークレットをマスクしてある。'
+        'Search past chat history from Claude Code, Codex, Cursor CLI and Antigravity CLI. '
+        'Use it to answer "how did I solve this before?" or "what was discussed in this '
+        'project?". Start with search_history to locate something, then read the full '
+        'conversation with get_session. Secrets are masked in the results by default.'
     ),
     cache_hints=CACHE_HINTS,
 )
@@ -121,9 +123,10 @@ def _clip(n, default, hi=MAX_LIMIT):
 @server.tool(
     name='search_history',
     description=(
-        '過去のチャット履歴を全文検索し、該当箇所の抜粋を返す。'
-        'query は 3 文字以上だと全文検索インデックスを使い、2 文字以下は自動的に部分一致検索へ切り替わる。'
-        'cwd にプロジェクトのパス（一部でよい）を渡すと、そのプロジェクトの会話に絞れる。'
+        'Full-text search over past chat history, returning an excerpt around each match. '
+        'Queries of 3+ characters use the full-text index; shorter ones fall back to a '
+        'substring search automatically. Pass part of a project path as cwd to restrict '
+        'the search to that project.'
     ),
     annotations=READ_ONLY,
 )
@@ -139,14 +142,14 @@ def search_history(
 ) -> SearchResult:
     """
     Args:
-        query: 検索語。
-        source: 絞り込むソース。claude-code / codex / cursor-cli / antigravity-cli。
-        cwd: プロジェクトパスの部分一致。
-        role: user / assistant / system / tool。
-        since: この日時以降 (ISO8601、例 2026-07-01)。
-        until: この日時以前。
-        host: 絞り込むマシン名。どのマシンで交わした会話かで絞れる。
-        limit: 最大件数（既定 20、上限 100）。
+        query: the search term.
+        source: restrict to these sources: claude-code / codex / cursor-cli / antigravity-cli.
+        cwd: substring match on the project path.
+        role: user / assistant / system / tool.
+        since: at or after this time (ISO 8601, e.g. 2026-07-01).
+        until: at or before this time.
+        host: restrict to conversations held on these machines.
+        limit: maximum results (default 20, capped at 100).
     """
     rows, mode = search.search(
         _db(), query, source=source, cwd=cwd, role=role, since=since, until=until,
@@ -166,15 +169,17 @@ def search_history(
         })
     notes = []
     if mode == 'like':
-        notes.append('query が 3 文字未満のため全文検索ではなく部分一致で検索した。')
+        notes.append('The query is under 3 characters, so a substring search was used '
+                     'instead of the full-text index.')
     if not hits:
-        notes.append('該当なし。語を短くするか cwd の絞り込みを外して再試行。')
+        notes.append('No matches. Try a shorter term or drop the cwd filter.')
     return {'mode': mode, 'count': len(hits), 'hits': hits, 'note': ' '.join(notes)}
 
 
 @server.tool(
     name='list_sessions',
-    description='会話セッションの一覧を新しい順に返す。プロジェクトや期間で絞れる。',
+    description='List conversation sessions, newest first. Can be filtered by project, '
+                'machine or time range.',
     annotations=READ_ONLY,
 )
 def list_sessions(
@@ -186,11 +191,11 @@ def list_sessions(
 ) -> SessionList:
     """
     Args:
-        cwd: プロジェクトパスの部分一致。
-        source: 絞り込むソース。
-        since: この日時以降 (ISO8601)。
-        host: 絞り込むマシン名。
-        limit: 最大件数（既定 20、上限 100）。
+        cwd: substring match on the project path.
+        source: restrict to these sources.
+        since: at or after this time (ISO 8601).
+        host: restrict to these machines.
+        limit: maximum results (default 20, capped at 100).
     """
     rows = search.sessions(_db(), cwd=cwd, source=source, since=since,
                            limit=_clip(limit, 20), host=host)
@@ -213,8 +218,8 @@ def list_sessions(
 @server.tool(
     name='get_session',
     description=(
-        '1 つのセッションの本文を返す。search_history や list_sessions が返した id を渡す。'
-        '長い会話は途中で打ち切られるため、続きは offset を進めて取得する。'
+        'Return the body of one session. Pass an id returned by search_history or '
+        'list_sessions. Long conversations are truncated, so advance offset to read on.'
     ),
     annotations=READ_ONLY,
 )
@@ -227,17 +232,19 @@ def get_session(
 ) -> SessionBody:
     """
     Args:
-        session_id: セッションの ext_id。
-        source: 同じ id が複数ソースにある場合に絞り込む。search_history が返す source をそのまま渡せる。
-        offset: 何件目から返すか。
-        limit: 最大件数（既定 50、上限 100）。
-        thinking: True なら思考ブロックも含める。
+        session_id: the session's ext_id.
+        source: disambiguate when the same id exists in several sources. Pass the source
+            returned by search_history.
+        offset: index of the first message to return.
+        limit: maximum messages (default 50, capped at 100).
+        thinking: include thinking blocks when true.
     """
     kinds = ['message'] + (['thinking'] if thinking else [])
     sess, msgs = search.show(_db(), session_id, masked=True, kinds=kinds, source=source)
     if not sess:
-        # 例外は SDK が is_error=True の結果へ変換する。返り値の型を分岐させない。
-        raise ValueError('セッションが見つかりません: %s' % session_id)
+        # The SDK turns exceptions into an is_error=True result, so the return type
+        # stays a single shape.
+        raise ValueError('Session not found: %s' % session_id)
 
     offset = max(0, int(offset or 0))
     limit = _clip(limit, 50)
@@ -249,7 +256,7 @@ def get_session(
     for m in window:
         text = m['text']
         if used + len(text) > MAX_BODY_CHARS:
-            text = text[:max(0, MAX_BODY_CHARS - used)] + '…（省略）'
+            text = text[:max(0, MAX_BODY_CHARS - used)] + '… (truncated)'
             truncated = True
         used += len(text)
         out.append({'role': m['role'], 'kind': m['kind'], 'ts': m['ts'],
@@ -273,13 +280,14 @@ def get_session(
 
 
 def main(argv=None):
-    p = argparse.ArgumentParser(prog='chist-mcp', description='chist の MCP サーバ')
+    p = argparse.ArgumentParser(prog='chist-mcp', description='MCP server for chist')
     p.add_argument('--transport', default='stdio',
                    choices=['stdio', 'streamable-http'],
-                   help='既定 stdio。Docker で動かすときは streamable-http')
+                   help='defaults to stdio; use streamable-http when running in Docker')
     p.add_argument('--host', default='127.0.0.1')
     p.add_argument('--port', type=int, default=8848)
-    p.add_argument('--db', help='DB パス（既定は CHIST_DB か ~/.local/share/chist/history.db）')
+    p.add_argument('--db', help='database path (defaults to CHIST_DB or '
+                                '~/.local/share/chist/history.db)')
     args = p.parse_args(argv)
 
     if args.db:
@@ -287,14 +295,14 @@ def main(argv=None):
 
     path = db.db_path(os.environ.get('CHIST_DB'))
     if not os.path.exists(path):
-        sys.stderr.write('DB がありません: %s\n先に `python3 -m chist ingest` を実行してください。\n' % path)
+        sys.stderr.write('No database at %s\nRun `python3 -m chist ingest` first.\n' % path)
         return 1
 
     if args.transport == 'stdio':
         server.run(transport='stdio')
     else:
-        # 2026-07-28 でプロトコルレベルのセッションが廃止されたため stateless で動かす。
-        # Docker 越しにロードバランサへ載せてもリクエストの振り分けが自由になる。
+        # 2026-07-28 removed protocol-level sessions, so run stateless. That also lets
+        # a load balancer route requests freely.
         server.run(transport='streamable-http', host=args.host, port=args.port,
                    stateless_http=True)
     return 0

@@ -1,8 +1,8 @@
 """Claude Code: ~/.claude/projects/**/*.jsonl
 
-セッション ID はレコード内の sessionId を使う。サブエージェントのログ
-(<session-id>/subagents/agent-*.jsonl) も同じ sessionId を持つため、
-親セッションに自然に合流する。
+The session id comes from the sessionId field in each record. Subagent logs
+(<session-id>/subagents/agent-*.jsonl) carry the same sessionId, so they merge into
+the parent session naturally.
 """
 import glob
 import os
@@ -12,7 +12,7 @@ from .base import Sess, blocks_to_msgs, read_jsonl
 SOURCE = 'claude-code'
 ROOT = os.path.expanduser('~/.claude/projects')
 
-# uuid を持たず繰り返し追記されるメタ情報型
+# Metadata records that carry no uuid and are appended repeatedly
 SKIP_TYPES = {
     'last-prompt', 'mode', 'permission-mode', 'file-history-snapshot',
     'file-history-delta', 'queue-operation', 'agent-name', 'attachment',
@@ -20,7 +20,7 @@ SKIP_TYPES = {
 
 
 def discover():
-    # サブエージェントが入れ子に置かれるため再帰必須（3.5-1）
+    # Must recurse: subagent logs are nested in subdirectories
     return sorted(glob.glob(os.path.join(ROOT, '**', '*.jsonl'), recursive=True))
 
 
@@ -28,7 +28,7 @@ def parse(path, start=0):
     records, next_off, errors = read_jsonl(path, start)
     sessions = {}
     msgs = []
-    seq = start  # ファイル内オフセットを順序の代理に使う
+    seq = start  # use the in-file offset as a stand-in for ordering
 
     for pos, d in records:
         t = d.get('type')

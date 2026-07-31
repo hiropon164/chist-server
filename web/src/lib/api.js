@@ -1,5 +1,5 @@
-// 認証は Traefik の basicauth が受け持つ。ブラウザが資格情報を再送するので、
-// ここでヘッダを組み立てる必要はない。
+// Authentication is handled by the proxy's basicauth. The browser resends the
+// credentials, so there is nothing to build here.
 
 async function get(path, params = {}) {
   const url = new URL(path, location.origin)
@@ -14,13 +14,13 @@ async function get(path, params = {}) {
 
   const res = await fetch(url, { headers: { Accept: 'application/json' } })
   if (!res.ok) {
-    if (res.status === 401) throw new Error('認証が必要です。ページを再読み込みしてください。')
-    let message = `サーバがエラーを返しました (HTTP ${res.status})`
+    if (res.status === 401) throw new Error('Authentication required. Reload the page.')
+    let message = `The server returned an error (HTTP ${res.status})`
     try {
       const body = await res.json()
       if (body?.error) message = body.error
     } catch {
-      /* JSON でない応答はそのまま既定メッセージにする */
+      /* Non-JSON responses keep the default message */
     }
     throw new Error(message)
   }
@@ -32,13 +32,13 @@ export const listSessions = (params) => get('/api/sessions', params)
 export const getSession = (params) => get('/api/session', params)
 export const getStats = (params) => get('/api/stats', params)
 
-/** 送信元マシンの一覧。ソースと違って固定ではないのでサーバから取る。 */
+/** The machines that have pushed. Unlike sources this is not fixed, so ask the server. */
 export async function fetchHosts() {
   try {
     const stats = await getStats({ projects: 1 })
     return (stats.hosts ?? []).map((h) => h.host).filter(Boolean)
   } catch {
-    // 一覧が取れなくても検索自体は使えるようにする
+    // Search still works even if the list cannot be fetched.
     return []
   }
 }
@@ -53,7 +53,7 @@ export const SOURCES = [
 const SOURCE_BY_ID = new Map(SOURCES.map((s) => [s.id, s]))
 
 export function sourceLabel(id) {
-  return SOURCE_BY_ID.get(id)?.label ?? id ?? '不明'
+  return SOURCE_BY_ID.get(id)?.label ?? id ?? 'unknown'
 }
 
 export function sourceSlot(id) {
@@ -61,15 +61,15 @@ export function sourceSlot(id) {
 }
 
 export const ROLES = [
-  { id: '', label: 'すべて' },
+  { id: '', label: 'All' },
   { id: 'user', label: 'user' },
   { id: 'assistant', label: 'assistant' },
   { id: 'system', label: 'system' },
   { id: 'tool', label: 'tool' },
 ]
 
-/** snippet() が返す \x02 / \x03 で囲まれた一致箇所を切り分ける。
- *  innerHTML を使わずに済ませるため、配列にして描画側で <mark> を当てる。 */
+/** Split on the \x02 / \x03 markers that snippet() puts around matches.
+ *  Returned as an array so the view can wrap hits in <mark> without innerHTML. */
 export function segments(text) {
   const out = []
   let rest = text ?? ''
@@ -100,10 +100,10 @@ export function formatTs(ts) {
 }
 
 export function formatNumber(n) {
-  return typeof n === 'number' ? n.toLocaleString('ja-JP') : '—'
+  return typeof n === 'number' ? n.toLocaleString('en-US') : '—'
 }
 
-/** cwd を末尾 2 階層まで縮める。全体は title 属性で見せる。 */
+/** Shorten cwd to its last two segments. The full path goes in a title attribute. */
 export function shortPath(path) {
   if (!path) return ''
   const parts = path.split('/').filter(Boolean)

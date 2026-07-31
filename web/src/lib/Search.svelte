@@ -33,7 +33,7 @@
         limit: filters.limit,
       })
       lastQuery = q
-      // 検索結果をそのままリンクで渡せるようにする
+      // Make the result shareable as a link
       const url = new URL(location.href)
       url.searchParams.set('q', q)
       history.replaceState(null, '', url)
@@ -56,13 +56,13 @@
   <div class="searchbar">
     <input
       type="search"
-      placeholder="履歴を検索（3 文字以上で全文検索）"
+      placeholder="Search history (3+ characters uses the full-text index)"
       bind:value={query}
       {onkeydown}
       autocomplete="off"
     />
     <button type="button" class="go" onclick={run} disabled={loading || !query.trim()}>
-      {loading ? '検索中…' : '検索'}
+      {loading ? 'Searching…' : 'Search'}
     </button>
   </div>
 
@@ -71,11 +71,11 @@
   {#if error}
     <p class="msg error">{error}</p>
   {:else if loading}
-    <p class="msg">検索しています…</p>
+    <p class="msg">Searching…</p>
   {:else if result}
     <p class="msg">
-      「{lastQuery}」— {result.count} 件
-      {#if result.mode === 'like'}<span class="tag">部分一致</span>{/if}
+      “{lastQuery}” — {result.count} results
+      {#if result.mode === 'like'}<span class="tag">substring</span>{/if}
       {#if result.note}<span class="note">{result.note}</span>{/if}
     </p>
 
@@ -105,7 +105,7 @@
     </ul>
   {:else}
     <p class="msg empty">
-      検索語を入れると、Claude Code / Codex / Cursor CLI / Antigravity CLI の履歴を横断で検索します。
+      Enter a query to search across your Claude Code, Codex, Cursor CLI and Antigravity CLI history.
     </p>
   {/if}
 </section>

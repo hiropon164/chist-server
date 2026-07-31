@@ -1,4 +1,4 @@
-"""アダプタ共通の型と JSONL の差分読み取り。"""
+"""Shared adapter types and incremental JSONL reading."""
 import dataclasses
 import hashlib
 import json
@@ -39,13 +39,13 @@ def head_sha(path: str) -> str:
 
 
 def read_jsonl(path: str, start: int = 0) -> Tuple[List[Tuple[int, Dict[str, Any]]], int, List[str]]:
-    """start バイト目以降の JSONL を読む。
+    """Read JSONL from byte offset `start`.
 
-    返り値は (レコード列, 次に読むべきオフセット, エラー説明).
-    レコード列の各要素は (その行の先頭オフセット, dict)。
+    Returns (records, next offset to read, error descriptions), where each record is
+    (offset of that line, dict).
 
-    進行中のセッションでは最終行が途中まで書かれていることがある。
-    その場合はその行を捨て、オフセットを「最後に成功した行の終端」に戻す。
+    A session still in progress may have a partially written final line. That line is
+    discarded and the offset rewinds to the end of the last complete line.
     """
     out: List[Tuple[int, Dict[str, Any]]] = []
     errors: List[str] = []
@@ -57,7 +57,7 @@ def read_jsonl(path: str, start: int = 0) -> Tuple[List[Tuple[int, Dict[str, Any
             line_start = pos
             pos += len(raw)
             if not raw.endswith(b'\n'):
-                # 行が閉じていない = 書き込み途中。次回この位置から読み直す
+                # Unterminated line means a write in progress; resume here next time
                 break
             s = raw.strip()
             if not s:
@@ -72,7 +72,7 @@ def read_jsonl(path: str, start: int = 0) -> Tuple[List[Tuple[int, Dict[str, Any
 
 
 def provider_of(model: Optional[str], source: str) -> str:
-    """モデル名から provider を判定する。判定できなければソース既定へ。"""
+    """Infer the provider from the model name, falling back to the source default."""
     m = (model or '').lower()
     if m.startswith(('claude', 'sonnet', 'opus', 'haiku', 'fable')):
         return 'anthropic'
@@ -90,7 +90,7 @@ def provider_of(model: Optional[str], source: str) -> str:
 
 
 def blocks_to_msgs(content, ext_id, role, ts, model, source, seq, src_pos) -> Iterator[Msg]:
-    """Anthropic 形式の content（str または block 配列）を Msg 列に変換する。"""
+    """Convert Anthropic-style content (a string or a block array) into Msg objects."""
     prov = provider_of(model, source)
 
     def mk(text, kind, part):

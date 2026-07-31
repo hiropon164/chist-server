@@ -1,8 +1,9 @@
-"""差分取り込みのドライバ。
+"""Incremental ingest driver.
 
-mtime + size が前回と同じファイルは開かずに飛ばす。変化していれば
-先頭 4KB のハッシュを照合し、一致すれば前回オフセットから追記分だけ読む。
-一致しなければ書き換えられたとみなして全再取り込みする。
+Files whose mtime and size are unchanged are skipped without opening them. If either
+changed, the hash of the first 4 KB is compared: on a match only the appended part is
+read from the previous offset; on a mismatch the file is treated as rewritten and
+re-ingested in full.
 """
 import datetime
 import os
@@ -13,7 +14,7 @@ from .adapters.base import head_sha
 
 
 def _now():
-    # utcnow() は 3.12 で非推奨。tz 付きで取って表記は従来どおり Z で揃える。
+    # utcnow() is deprecated in 3.12. Take a tz-aware value but keep the Z suffix.
     return datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
 
 
@@ -35,7 +36,7 @@ def _upsert_session(conn, source, s):
 
 
 def ingest_source(conn, source, progress=None, limit=None):
-    """1 ソースを取り込み、統計 dict を返す。"""
+    """Ingest one source. Returns a stats dict."""
     mod = ADAPTERS[source]
     stat = {'source': source, 'files': 0, 'scanned': 0, 'skipped': 0,
             'messages': 0, 'sessions': 0, 'errors': 0, 'reingested': 0}
@@ -59,15 +60,15 @@ def ingest_source(conn, source, progress=None, limit=None):
             stat['skipped'] += 1
             continue
 
-        # SQLite を読むアダプタは先頭バイトが毎回変わる（変更カウンタ）ため
-        # ハッシュ照合を行わない。カーソルは行 ID なので再開は常に安全。
+        # Adapters reading SQLite skip the hash check: the leading bytes change on every
+        # write (the change counter). Their cursor is a row id, so resuming is always safe.
         use_sha = getattr(mod, 'USE_HEAD_SHA', True)
 
         start = 0
         if prev:
             try:
                 if use_sha and prev['head_sha'] and head_sha(path) != prev['head_sha']:
-                    # 先頭が変わっている = 追記ではない。安全側に倒して全部読み直す
+                    # The head changed, so this was not an append. Re-read everything.
                     start = 0
                     stat['reingested'] += 1
                 else:
@@ -77,7 +78,7 @@ def ingest_source(conn, source, progress=None, limit=None):
 
         try:
             sessions, msgs, next_off, errors = mod.parse(path, start)
-        except Exception as e:  # 1 ファイルの失敗で全体を止めない
+        except Exception as e:  # one bad file must not stop the whole run
             conn.execute('INSERT INTO ingest_errors (source, path, pos, reason, seen_at) '
                          'VALUES (?,?,?,?,?)', (source, path, start, repr(e), _now()))
             stat['errors'] += 1

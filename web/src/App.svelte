@@ -6,12 +6,12 @@
   import { fetchHosts } from './lib/api.js'
 
   const TABS = [
-    { id: 'search', label: '検索' },
-    { id: 'sessions', label: 'セッション' },
-    { id: 'stats', label: '統計' },
+    { id: 'search', label: 'Search' },
+    { id: 'sessions', label: 'Sessions' },
+    { id: 'stats', label: 'Stats' },
   ]
 
-  // ?q=… があれば検索タブを開いてそのまま実行する（リンク共有用）
+  // ?q=… opens the search tab and runs it immediately (for shareable links)
   const initialQuery = new URLSearchParams(location.search).get('q') ?? ''
   const initialTab = location.hash.slice(1)
   let tab = $state(
@@ -19,11 +19,11 @@
   )
   let openId = $state(null)
   let theme = $state(localStorage.getItem('chist-theme') || 'auto')
-  // 送信元マシンの一覧は起動時に一度だけ取る（フィルタの選択肢に使う）
+  // Fetch the list of machines once at startup; used as filter options.
   let hosts = $state([])
   fetchHosts().then((h) => (hosts = h))
 
-  // タブを URL に持たせる。リロードや共有で同じ画面に戻れる。
+  // Keep the tab in the URL so a reload or a shared link lands in the same place.
   $effect(() => {
     if (location.hash.slice(1) !== tab) history.replaceState(null, '', '#' + tab)
   })
@@ -40,7 +40,7 @@
   }
 
   const themeLabel = $derived(
-    theme === 'auto' ? '自動' : theme === 'light' ? 'ライト' : 'ダーク',
+    theme === 'auto' ? 'Auto' : theme === 'light' ? 'Light' : 'Dark',
   )
 </script>
 
@@ -48,7 +48,7 @@
   <div class="inner">
     <div class="brand">
       <strong>chist</strong>
-      <span>CLI チャット履歴</span>
+      <span>CLI chat history</span>
     </div>
 
     <nav>
@@ -65,8 +65,8 @@
       {/each}
     </nav>
 
-    <button type="button" class="theme" onclick={cycleTheme} title="表示テーマを切り替える">
-      テーマ: {themeLabel}
+    <button type="button" class="theme" onclick={cycleTheme} title="Switch color theme">
+      Theme: {themeLabel}
     </button>
   </div>
 </header>

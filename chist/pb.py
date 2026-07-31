@@ -1,12 +1,12 @@
-"""protobuf wire format の最小デコーダ。
+"""Minimal protobuf wire-format decoder.
 
-Antigravity CLI は会話を SQLite に入れた生 protobuf として保存しており、
-`.proto` 定義が手に入らない。フィールド番号を直接指定して値を取り出すために、
-wire format だけを解釈する。
+Antigravity CLI stores conversations as raw protobuf inside SQLite, and no `.proto`
+definition is available. This interprets the wire format alone, so values can be
+pulled out by field number.
 """
 from typing import Any, List, Optional, Tuple
 
-Node = Tuple[int, str, Any]  # (field_number, kind, value) / kind は 'v'|'s'|'m'|'f'
+Node = Tuple[int, str, Any]  # (field_number, kind, value); kind is 'v'|'s'|'m'|'f'
 
 MAX_DEPTH = 8
 
@@ -23,7 +23,7 @@ def _varint(b: bytes, i: int) -> Tuple[int, int]:
 
 
 def decode(b: bytes, depth: int = 0) -> List[Node]:
-    """バイト列をノード列へ復号する。壊れた位置で打ち切る（例外は投げない）。"""
+    """Decode bytes into nodes, stopping at the first corruption. Never raises."""
     out: List[Node] = []
     i = 0
     while i < len(b):
@@ -59,7 +59,7 @@ def decode(b: bytes, depth: int = 0) -> List[Node]:
 
 
 def _as_text(v: bytes) -> Optional[str]:
-    """UTF-8 として妥当かつほぼ印字可能なら文字列とみなす。"""
+    """Treat as a string when it is valid UTF-8 and mostly printable."""
     if not v:
         return None
     try:
@@ -71,14 +71,14 @@ def _as_text(v: bytes) -> Optional[str]:
 
 
 def get(nodes: List[Node], path: str) -> Optional[Any]:
-    """'.19.2' のようなパスで最初の一致を取り出す。"""
+    """Fetch the first value at a path such as '.19.2'."""
     for v in getall(nodes, path):
         return v
     return None
 
 
 def getall(nodes: List[Node], path: str):
-    """同一パスの値をすべて返す（proto の repeated 対応）。"""
+    """Return every value at a path (handles proto repeated fields)."""
     parts = [int(x) for x in path.strip('.').split('.')]
 
     def rec(cur, depth):
@@ -100,7 +100,7 @@ def getall(nodes: List[Node], path: str):
 
 
 def texts(nodes: List[Node], min_len: int = 1):
-    """含まれる文字列を (パス, 値) で列挙する（構造調査用）。"""
+    """Enumerate contained strings as (path, value), for exploring an unknown structure."""
     def rec(cur, path):
         for fn, kind, v in cur:
             p = '%s.%d' % (path, fn)

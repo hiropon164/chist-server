@@ -37,42 +37,42 @@
   class="backdrop"
   role="button"
   tabindex="-1"
-  aria-label="閉じる"
+  aria-label="Close"
   onclick={onclose}
   onkeydown={() => {}}
 ></div>
 
-<aside class="panel" aria-label="会話の本文">
+<aside class="panel" aria-label="Conversation">
   <header>
     <div class="head">
       {#if data}
         <SourceBadge source={data.session.source} />
-        <h2>{data.session.title || '（無題）'}</h2>
+        <h2>{data.session.title || '(untitled)'}</h2>
       {:else}
-        <h2>読み込み中…</h2>
+        <h2>Loading…</h2>
       {/if}
     </div>
-    <button type="button" class="close" onclick={onclose} aria-label="閉じる">✕</button>
+    <button type="button" class="close" onclick={onclose} aria-label="Close">✕</button>
   </header>
 
   {#if data}
     <dl class="info">
       {#if data.session.cwd}
-        <div><dt>パス</dt><dd class="mono">{data.session.cwd}</dd></div>
+        <div><dt>Path</dt><dd class="mono">{data.session.cwd}</dd></div>
       {/if}
       {#if data.session.git_branch}
-        <div><dt>ブランチ</dt><dd class="mono">{data.session.git_branch}</dd></div>
+        <div><dt>Branch</dt><dd class="mono">{data.session.git_branch}</dd></div>
       {/if}
       {#if data.session.host}
-        <div><dt>ホスト</dt><dd>{data.session.host}</dd></div>
+        <div><dt>Machine</dt><dd>{data.session.host}</dd></div>
       {/if}
-      <div><dt>期間</dt><dd>{formatTs(data.session.started_at)} 〜 {formatTs(data.session.ended_at)}</dd></div>
-      <div><dt>件数</dt><dd>{formatNumber(data.total)} 件を表示中（全 {formatNumber(data.session.messages)} 件）</dd></div>
+      <div><dt>Span</dt><dd>{formatTs(data.session.started_at)} – {formatTs(data.session.ended_at)}</dd></div>
+      <div><dt>Messages</dt><dd>showing {formatNumber(data.total)} of {formatNumber(data.session.messages)}</dd></div>
     </dl>
 
     <label class="toggle">
       <input type="checkbox" bind:checked={thinking} onchange={load} />
-      思考ブロックも表示する
+      Show thinking blocks
     </label>
   {/if}
 
@@ -80,7 +80,7 @@
     {#if error}
       <p class="msg error">{error}</p>
     {:else if loading}
-      <p class="msg">読み込み中…</p>
+      <p class="msg">Loading…</p>
     {:else if data?.messages.length}
       {#each data.messages as m, i (i)}
         <article class="turn role-{m.role}" class:thinking={m.kind === 'thinking'}>
@@ -94,10 +94,10 @@
         </article>
       {/each}
       {#if data.has_more}
-        <p class="msg">この先は省略されています（表示上限に達しました）。</p>
+        <p class="msg">Truncated here (display limit reached).</p>
       {/if}
     {:else}
-      <p class="msg empty">本文がありません。</p>
+      <p class="msg empty">No content.</p>
     {/if}
   </div>
 </aside>

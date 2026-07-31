@@ -1,7 +1,7 @@
-"""検索。
+"""Search.
 
-trigram は 3 文字未満のクエリを MATCH できないため、
-2 文字以下は LIKE に自動フォールバックする。
+The trigram tokenizer cannot MATCH queries shorter than 3 characters, so anything
+shorter falls back to LIKE automatically.
 """
 from .mask import mask
 
@@ -9,7 +9,7 @@ MIN_TRIGRAM = 3
 
 
 def _fts_query(q):
-    """ユーザー入力を FTS5 の文字列リテラルへ包む（構文エラーを避ける）。"""
+    """Wrap user input as FTS5 string literals so it cannot cause a syntax error."""
     terms = [t for t in q.split() if t]
     return ' '.join('"%s"' % t.replace('"', '""') for t in terms)
 
@@ -20,14 +20,14 @@ def uses_fts(query):
 
 def search(conn, query, source=None, cwd=None, role=None, since=None, until=None,
            limit=20, masked=True, host=None):
-    """snippet 付きの検索結果を返す。"""
+    """Return search results with a snippet around each match."""
     where = []
     args = []
     if source:
         where.append('m.source IN (%s)' % ','.join('?' * len(source)))
         args += list(source)
     if host:
-        # host は messages ではなく sessions 側が持つ（どちらの分岐でも JOIN 済み）
+        # host lives on sessions, not messages (both branches already JOIN it)
         where.append('s.host IN (%s)' % ','.join('?' * len(host)))
         args += list(host)
     if cwd:
@@ -59,7 +59,7 @@ def search(conn, query, source=None, cwd=None, role=None, since=None, until=None
         params.append(limit)
         mode = 'fts'
     else:
-        # 2 文字以下: trigram では引けないので LIKE で拾う
+        # Under 3 characters: trigram cannot match, so use LIKE
         sql = ('SELECT m.id, m.source, m.role, m.kind, m.ts, m.model, m.cwd, s.title,'
                '       s.ext_id AS session_id,'
                '       m.text AS hit, 0 AS score '
@@ -121,11 +121,11 @@ def sessions(conn, cwd=None, source=None, since=None, limit=20, host=None, maske
 
 
 def show(conn, session_ext_id, masked=True, kinds=None, source=None):
-    """セッション 1 件と本文を返す。
+    """Return one session and its messages.
 
-    ext_id の一意性は (source, ext_id) でしか保証されない。別々の CLI が同じ
-    UUID を使うと ext_id だけでは特定できないため、source を渡せるようにしてある。
-    省略時は先頭 1 件（従来動作）。曖昧なときは ambiguous を True で返す。
+    ext_id is only unique together with source. If two CLIs happen to use the same
+    UUID, ext_id alone cannot identify a session, so source can be supplied. Omitting
+    it returns the first match and sets ambiguous=True when more than one exists.
     """
     if source:
         rows = conn.execute(

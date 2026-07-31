@@ -5,8 +5,8 @@
   let loading = $state(true)
   let error = $state('')
 
-  // 単一系列の量比較なので色は sequential blue の 1 色。
-  // 識別は行ラベルが担うため、カテゴリ配色は使わない。
+  // A single series compared by magnitude, so one sequential blue.
+  // Row labels carry identity; no categorical palette here.
   const maxOf = (rows) => Math.max(1, ...rows.map((r) => r.n))
 
   async function load() {
@@ -29,25 +29,25 @@
   {#if error}
     <p class="msg error">{error}</p>
   {:else if loading}
-    <p class="msg">読み込み中…</p>
+    <p class="msg">Loading…</p>
   {:else if data}
     <div class="tiles">
       <div class="tile">
-        <div class="tile-label">メッセージ</div>
+        <div class="tile-label">Messages</div>
         <div class="tile-value">{formatNumber(data.totals.messages)}</div>
       </div>
       <div class="tile">
-        <div class="tile-label">セッション</div>
+        <div class="tile-label">Sessions</div>
         <div class="tile-value">{formatNumber(data.totals.sessions)}</div>
       </div>
       <div class="tile">
-        <div class="tile-label">ホスト</div>
+        <div class="tile-label">Machines</div>
         <div class="tile-value">{formatNumber(data.totals.hosts)}</div>
       </div>
     </div>
 
     <div class="card">
-      <h3>ソース別のメッセージ数</h3>
+      <h3>Messages by source</h3>
       {#if data.sources.length}
         {@const max = maxOf(data.sources)}
         <div class="chart">
@@ -58,21 +58,21 @@
                 <div
                   class="bar-fill"
                   style="width: {(row.n / max) * 100}%"
-                  title="{formatNumber(row.n)} 件"
+                  title="{formatNumber(row.n)}"
                 ></div>
               </div>
               <div class="bar-value">{formatNumber(row.n)}</div>
-              <div class="bar-sub">{formatTs(row.first)} 〜 {formatTs(row.last)}</div>
+              <div class="bar-sub">{formatTs(row.first)} – {formatTs(row.last)}</div>
             </div>
           {/each}
         </div>
       {:else}
-        <p class="msg empty">データがありません。</p>
+        <p class="msg empty">No data.</p>
       {/if}
     </div>
 
     <div class="card">
-      <h3>プロジェクト別のメッセージ数（上位 {data.projects.length} 件）</h3>
+      <h3>Messages by project (top {data.projects.length})</h3>
       {#if data.projects.length}
         {@const max = maxOf(data.projects)}
         <div class="chart">
@@ -83,28 +83,28 @@
                 <div
                   class="bar-fill"
                   style="width: {(row.n / max) * 100}%"
-                  title="{formatNumber(row.n)} 件"
+                  title="{formatNumber(row.n)}"
                 ></div>
               </div>
               <div class="bar-value">{formatNumber(row.n)}</div>
-              <div class="bar-sub">{row.hosts} ホスト / {row.tools} ツール</div>
+              <div class="bar-sub">{row.hosts} machines / {row.tools} tools</div>
             </div>
           {/each}
         </div>
       {:else}
         <p class="msg empty">
-          project_key が未設定です。各マシンで <code>chist backfill</code> を実行してください。
+          project_key is not set. Run <code>chist backfill</code> on each machine.
         </p>
       {/if}
     </div>
 
     <div class="card">
-      <h3>ホスト</h3>
+      <h3>Machines</h3>
       {#if data.hosts.length}
         <div class="tablewrap">
           <table>
             <thead>
-              <tr><th>ホスト</th><th>OS</th><th>最終送信</th></tr>
+              <tr><th>Machine</th><th>OS</th><th>Last push</th></tr>
             </thead>
             <tbody>
               {#each data.hosts as h (h.host)}
@@ -118,7 +118,7 @@
           </table>
         </div>
       {:else}
-        <p class="msg empty">まだどのマシンからも送信されていません。</p>
+        <p class="msg empty">No machine has pushed yet.</p>
       {/if}
     </div>
   {/if}
@@ -201,7 +201,7 @@
     overflow: hidden;
   }
 
-  /* データ端だけ 4px で丸め、基線側は角のままにする */
+  /* Round only the data end at 4px; the baseline end stays square. */
   .bar-fill {
     height: 100%;
     background: var(--bar);

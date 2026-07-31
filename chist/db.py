@@ -1,4 +1,4 @@
-"""DB 接続とスキーマ適用。"""
+"""Database connection and schema management."""
 import os
 import pathlib
 import sqlite3
@@ -9,7 +9,7 @@ DEFAULT_DB = os.path.expanduser('~/.local/share/chist/history.db')
 
 SCHEMA_VERSION = 2
 
-# 版 1（単一マシン）から 2（複数マシン集約）への差分。
+# Delta from version 1 (single machine) to 2 (multi-machine aggregation).
 _MIGRATIONS = {
     2: [
         'CREATE TABLE IF NOT EXISTS hosts ('
@@ -26,7 +26,7 @@ _MIGRATIONS = {
 
 
 def _migrate(conn):
-    """既存 DB を最新スキーマへ寄せる。列が既にあれば黙って飛ばす。"""
+    """Bring an existing database up to the current schema, skipping what is already there."""
     cur = conn.execute('PRAGMA user_version').fetchone()[0]
     if cur >= SCHEMA_VERSION:
         return 0
@@ -45,12 +45,12 @@ def _migrate(conn):
 
 
 def connect(path=None, readonly=False):
-    """DB を開く。存在しなければスキーマを適用して作り、古ければ移行する。"""
+    """Open the database, creating it from the schema or migrating it as needed."""
     path = os.path.expanduser(path or os.environ.get('CHIST_DB') or DEFAULT_DB)
     if readonly:
         conn = sqlite3.connect('file:%s?mode=ro' % path, uri=True)
         conn.row_factory = sqlite3.Row
-        # PRAGMA は接続ごとの設定。schema.sql の宣言は引き継がれない
+        # PRAGMAs are per-connection; the declaration in schema.sql does not carry over
         conn.execute('PRAGMA foreign_keys = ON')
         return conn
 
@@ -58,13 +58,13 @@ def connect(path=None, readonly=False):
     fresh = not os.path.exists(path)
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
-    # schema.sql の PRAGMA foreign_keys は executescript した接続にしか効かない。
-    # 明示的に入れないと messages の ON DELETE CASCADE が動かない。
+    # PRAGMA foreign_keys in schema.sql only applies to the connection that ran
+    # executescript. Without setting it here, ON DELETE CASCADE on messages is inert.
     conn.execute('PRAGMA foreign_keys = ON')
     if fresh:
         conn.executescript(SCHEMA_PATH.read_text())
         conn.commit()
-        # 履歴には認証情報が混入しうるため、所有者のみ読める権限にする
+        # History can contain credentials, so keep it readable by the owner only
         os.chmod(path, 0o600)
     else:
         _migrate(conn)

@@ -1,8 +1,8 @@
 """Codex: ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
 
-モデルはターン単位（turn_context.payload.model）で記録されるため、
-直近の turn_context の値を以降のメッセージへ引き継ぐ。
-タイトルは ~/.codex/session_index.jsonl の thread_name から補う。
+The model is recorded per turn (turn_context.payload.model), so the value from the
+most recent turn_context carries forward to the messages that follow.
+Titles are filled in from thread_name in ~/.codex/session_index.jsonl.
 """
 import glob
 import json
@@ -97,8 +97,8 @@ def parse(path, start=0):
                     add(c.get('text'), role, 'message', part)
                     part += 1
         elif ptype == 'reasoning':
-            # content は encrypted_content のみのことが多く復号できない。
-            # 平文の summary があるときだけ拾う。
+            # content is usually encrypted_content only, which cannot be decrypted.
+            # Take it only when a plaintext summary is present.
             part = 0
             for s in (pl.get('summary') or []):
                 txt = s.get('text') if isinstance(s, dict) else s

@@ -1,244 +1,263 @@
-# 管理サーバのデプロイ（複数マシン集約）
+# Deploying the aggregation server (multi-machine)
 
-各マシンでローカル取り込み → 正規化済みデータを管理サーバへ送信 → 各ツールは
-サーバの MCP を叩く、という構成。前提は **同一 LAN 内のみ** からの到達で、
-既存の **Traefik** 経由で公開する。
+Each machine ingests locally, sends normalised data to the aggregation server, and every
+tool then queries the server's MCP endpoint. The assumption is that only a private
+network can reach it, published through an existing **Traefik**.
 
 ```
-┌─ Mac / PC（エージェント）──┐         ┌─ Docker サーバ ───────────────────────┐
-│ chist ingest → chist push  │  HTTPS  │ Traefik :443（letsencrypt）           │
-│   依存ゼロ / Python 3.9    │────────▶│   Host(`chist.example.com`)          │
-│                            │         │   ipwhitelist → forwardAuth(/auth)    │
+┌─ Mac / PC (agent) ─────────┐         ┌─ Docker host ─────────────────────────┐
+│ chist ingest → chist push  │  HTTPS  │ Traefik :443 (letsencrypt)            │
+│   zero deps / Python 3.9   │────────▶│   Host(`chist.example.com`)           │
+│                            │         │   ipallowlist → forwardAuth(/auth)    │
 │ Claude Code / Codex /      │   MCP   │              │                        │
 │ Cursor / Antigravity       │────────▶│              ▼                        │
-└────────────────────────────┘         │ chist-server :8848（ホストポート無し）│
+└────────────────────────────┘         │ chist-server :8848 (no host port)     │
                                         │   POST /ingest   POST /mcp            │
                                         │   GET  /health   /stats   /auth       │
-                                        │   SQLite（volume: chist-data）        │
+                                        │   SQLite (volume: chist-data)         │
                                         └───────────────────────────────────────┘
 ```
 
-ホスト側にポートは開けない。Traefik と同じ docker network に参加し、
-Traefik がコンテナの 8848 へ直接繋ぐ。
+No host port is opened. The container joins the same docker network as Traefik, which
+connects to port 8848 directly.
 
-**取り込みは必ずエージェント側で行う。** チャットログにはホスト名も git remote も
-記録されておらず、`git -C <cwd> remote get-url origin` を実行できるのはリポジトリが
-存在するマシンだけだから。
+**Ingest must happen on the agent side.** Chat logs record neither the hostname nor the
+git remote, and `git -C <cwd> remote get-url origin` only works on the machine that has
+the repository.
 
-## サーバ側の手順
+## Server side
 
-Docker サーバにこのリポジトリを置いて、その場でビルドする。イメージレジストリは不要で、
-arm64 / amd64 の差もビルド時に吸収される。
+Put the repository on the Docker host and build it there. No image registry is needed,
+and the arm64 / amd64 difference is absorbed at build time.
 
 ```bash
 cd /srv/chist-server
 cp .env.example .env
-vi .env          # CHIST_TOKEN を埋める
+vi .env          # fill in CHIST_TOKEN
 
 docker compose up -d --build
 docker compose logs -f chist
 ```
 
-`.env` の中身:
+What goes in `.env` (see `.env.example` for the annotated version):
 
 ```
-CHIST_TOKEN=<openssl rand -hex 32 の出力>
+CHIST_TOKEN=<output of openssl rand -hex 32>
 CHIST_HOST=chist.example.com
-CHIST_ALLOW=192.168.1.0/24,203.0.113.10/32
-CHIST_BASICAUTH=<htpasswd -nbB の出力>
-CHIST_NETWORK=traefik_traefik
+CHIST_ALLOW=192.168.1.0/24
+CHIST_BASICAUTH=<output of htpasswd -nbB>
+CHIST_NETWORK=traefik
 CHIST_ENTRYPOINT=websecure
 CHIST_CERTRESOLVER=letsencrypt
 ```
 
-`docker-compose.yml` は環境依存の値をすべて `.env` から読む。別のサーバへ移すときも
-compose には触らない。
+`docker-compose.yml` reads every environment-specific value from `.env`, so moving to a
+different host never means editing the compose file.
 
-確認:
+Check it:
 
 ```bash
 curl -s -H "Authorization: Bearer $CHIST_TOKEN" https://chist.example.com/health
 # {"ok":true,"messages":0}
 ```
 
-`.env` に書いたトークンは各エージェントにも配る。**未設定だとサーバは起動を拒否する。**
+Distribute the same token to every agent. **The server refuses to start without it.**
 
-### Traefik 側で押さえること
+### What to get right in Traefik
 
-**1. ネットワーク名を合わせる。** `docker network ls` で既存 Traefik のネットワークを確認し
-`CHIST_NETWORK` に入れる（compose プロジェクト名が付いて `<project>_traefik` のような名前に
-なっていることが多い。たとえば `traefik_traefik`）。compose 側は `external: true` で参加する
-だけなので、Traefik の設定ファイルには手を入れない。ラベルだけの構成なので
-`docker restart traefik` も不要。
+**1. Match the network name.** Find the network your existing Traefik is on with
+`docker network ls` and put it in `CHIST_NETWORK` (compose usually prefixes the project
+name, giving something like `<project>_traefik`). The compose file only joins it with
+`external: true`, so Traefik's own configuration is untouched. Everything is done with
+labels, so Traefik does not need restarting.
 
-**2. buffering ミドルウェアを当てない。** MCP の streamable HTTP は POST のレスポンスを
-ストリームで返す。Traefik は既定でバッファしないのでそのまま通るが、
-`buffering` ミドルウェアを付けると応答が返らなくなる。
+**2. Do not attach a buffering middleware.** MCP's streamable HTTP returns the POST
+response as a stream. Traefik does not buffer by default, so it passes through — but a
+`buffering` middleware will make the response never arrive.
 
-**3. 名前解決。** `*.example.com` はワイルドカードで `203.0.113.10`（ルータの固定
-グローバル IP）に解決され、LAN 内からはヘアピン NAT で戻ってくる。`chist.example.com`
-も追加設定なしで引けるため、`/etc/hosts` への追記は不要。
+**3. Name resolution.** `CHIST_HOST` has to resolve from every machine. Add an A record
+to your router's DNS, or write the Docker host's IP into each machine's `/etc/hosts`
+(`C:\Windows\System32\drivers\etc\hosts` on Windows).
 
-**4. `/mcp` を必ず forwardAuth で保護する（重要）。** `/ingest` と `/stats` はアプリ内で
-bearer token を検証しているが、`/mcp` は MCP SDK 側のルートなのでその検証を通らない。
-プロキシを素通しにすると**トークンなしで全履歴が読める**（実測で `tools/list` が 200 を返す）。
-compose のラベルで `/auth` を forwardAuth 先に指定してある。
+Where wildcard DNS points at a public IP, LAN traffic can come back through hairpin NAT
+and arrive as the router's **external** address. In that case **`CHIST_ALLOW` must
+include that public IP too**, or requests from the LAN get a 403.
+
+**4. Always protect `/mcp` with forwardAuth (important).** `/ingest` and `/stats` verify
+the bearer token inside the app, but `/mcp` is routed by the MCP SDK and never reaches
+that check. Passing it straight through means **the whole history is readable with no
+token** (measured: `tools/list` returns 200). The compose labels point forwardAuth at
+`/auth`.
 
 ```yaml
-- traefik.http.routers.chist.middlewares=chist-allow,chist-auth
+- traefik.http.routers.chist-agent.middlewares=chist-allow,chist-auth
 - traefik.http.middlewares.chist-auth.forwardauth.address=http://chist-server:8848/auth
 ```
 
-`/auth` は Authorization ヘッダだけを見て 200 / 401 を返す。Traefik のヘルスチェックは
-ミドルウェアを通らないので `/health` が弾かれることはない。
+`/auth` looks only at the Authorization header and returns 200 or 401. Traefik's health
+check bypasses middleware, so `/health` is never blocked by it.
 
-**5. Web UI は basicauth で守る。** `/` と `/api/*` はブラウザから使うため bearer token を
-付けられない。ルータを分けて basicauth を当てている。ハッシュの生成は次のとおり
-（出力を `.env` の `CHIST_BASICAUTH` にそのまま貼る。`.env` 内では `$` のエスケープは不要）。
+**5. Guard the web UI with basicauth.** `/` and `/api/*` are used from a browser, which
+cannot send a bearer token, so they get their own router with basicauth. Generate the
+hash with:
 
 ```bash
 docker run --rm httpd:2-alpine htpasswd -nbB <user> <pass>
 ```
 
-結果としてルータは 3 つになる。優先度は明示してあるので、パスの重なりで取り違えない。
+Paste the output into `CHIST_BASICAUTH` in `.env` (no `$` escaping is needed there).
 
-| ルータ | 対象 | 認証 | priority |
+That makes three routers. Priorities are set explicitly so overlapping paths cannot be
+mixed up.
+
+| Router | Matches | Authentication | priority |
 |---|---|---|---|
-| `chist-health` | `/health` | なし | 300 |
-| `chist-agent` | `/ingest` `/mcp` `/stats` | forwardAuth（bearer） | 200 |
-| `chist-web` | それ以外（`/` `/api/*`） | basicauth | 100 |
+| `chist-health` | `/health` | none | 300 |
+| `chist-agent` | `/ingest` `/mcp` `/stats` | forwardAuth (bearer) | 200 |
+| `chist-web` | everything else (`/`, `/api/*`) | basicauth | 100 |
 
-**6. 到達範囲を絞る。** `CHIST_ALLOW` に許可する送信元 CIDR を並べる。ワイルドカード DNS で
-グローバル IP に向けている環境では、LAN 内からのアクセスもヘアピン NAT でルータの外側 IP
-として届くため、**そのグローバル IP を外すと LAN からも 403 になる**。
+**6. Restrict who can reach it.** List the allowed source CIDRs in `CHIST_ALLOW`.
 
 ```yaml
 - traefik.http.middlewares.chist-allow.ipallowlist.sourcerange=${CHIST_ALLOW}
 ```
 
-Traefik v3 では `ipallowlist` が正式名（v2 の `ipwhitelist` は非推奨）。
+`ipallowlist` is the Traefik v3 spelling (`ipwhitelist` from v2 is deprecated).
 
-**7. TLS。** `websecure`（:443）+ `certresolver=letsencrypt`（Route53 DNS-01）で張る。
-`push` の bearer token が平文で流れるため、平文 HTTP のまま運用しない。
+**7. TLS.** Serve on `websecure` (:443) with `certresolver=letsencrypt`. The bearer
+token travels in the clear over plain HTTP, so do not run it that way.
 
-### 履歴の削除と容量
+### Deleting history and disk usage
 
-取り込みは追記のみなので DB は増え続ける。実測で 1 件あたり 3.8〜5.9KB
-（FTS の trigram 索引が本文の約 1.9 倍）。日常利用なら年 150〜300MB 程度で、
-容量が逼迫することは当面ないが、誤取り込みや機微な会話を消す手段としてコマンドがある。
+Ingest only appends, so the database grows. Measured at 3.8–5.9 KB per message (the
+trigram index alone is about 1.9× the body), which works out to roughly 150–300 MB per
+year in daily use. Capacity is rarely the problem, but there is a command for removing
+mistaken imports or conversations you would rather not keep.
 
 ```bash
 docker exec chist-server python -m chist prune --before 2026-01-01 --dry-run
 docker exec chist-server python -m chist prune --before 2026-01-01 --yes --vacuum
 ```
 
-条件（`--before` / `--after` / `--source` / `--session` / `--match`）を 1 つ以上
-指定しないと何もしない。`--vacuum` を付けないとファイルサイズは縮まない。
+Nothing happens unless at least one condition (`--before` / `--after` / `--source` /
+`--session` / `--match`) is given, and the file only shrinks with `--vacuum`.
 
-なお `docker-backup.sh` は volume を丸ごと tar して restic に渡すため、DB が
-大きくなると日次バックアップの効率が落ちる。GB 級になったら prune を検討する。
+Note that a backup script archiving the whole volume will copy the entire database every
+run, so its efficiency drops as the database grows. Consider pruning once it reaches the
+gigabyte range.
 
-### DB の置き場所
+### Where the database lives
 
-named volume (`chist-data`) を使う。**SQLite を NFS / SMB に置かないこと**（ロックが壊れる）。
+Use the named volume (`chist-data`). **Never put SQLite on NFS or SMB** — its locking
+breaks.
 
 ```bash
-# バックアップ
+# backup
 docker run --rm -v chist-data:/data -v "$PWD":/backup alpine \
   tar czf /backup/chist-$(date +%Y%m%d).tar.gz -C /data .
 ```
 
-## エージェント側の手順
+## Agent side
 
-各マシンで。**MCP SDK は不要**、システムの Python 3.9 以上があれば動く。
+On each machine. **The MCP SDK is not needed**; any Python 3.9 or newer works.
 
 ```bash
-export CHIST_TOKEN=<サーバと同じトークン>
+export CHIST_TOKEN=<the same token as the server>
 
-python3 -m chist ingest                    # ローカル取り込み
-python3 -m chist push https://chist.example.com     # 差分を送信
+python3 -m chist ingest                             # local ingest
+python3 -m chist push https://chist.example.com     # send the delta
 ```
 
-cron / launchd で定期実行するなら 2 行をそのまま並べればよい。どちらも冪等。
+To run it periodically from cron or launchd, just put those two lines in order. Both are
+idempotent.
 
-### 送信されるもの
+### What gets sent
 
-既定では **`message` / `thinking` / `artifact` のみ**。`tool_call` / `tool_result` は
-件数で全体の 7 割を占めるうえ FTS 索引の対象外なので送らない。必要なら
-`--include-tools` を付ける。
+By default only `message` / `thinking` / `artifact`. `tool_call` and `tool_result` make
+up about 70% of all rows and are not in the FTS index, so they are skipped. Pass
+`--include-tools` to include them.
 
-実測（この Mac 1 台分）:
+Measured on one Mac:
 
-| | 件数 | DB サイズ |
+| | rows | database |
 |---|---:|---:|
-| ローカル DB（tool 含む全件） | 51,386 | 125MB |
-| サーバへ送信した分 | 13,631 | 50MB |
+| local database (everything, including tools) | 51,386 | 125 MB |
+| sent to the server | 13,631 | 50 MB |
 
-初回 13,631 件の送信が **約 6.6 秒**（26 バッチ）。以降は差分のみなので日次で数百 KB。
+The initial push of 13,631 rows took about **6.6 s** (26 batches). After that only the
+delta moves — a few hundred KB per day.
 
-### シークレットのマスキング
+### Secret masking
 
-送信前（エージェント側）でマスクする。ローカル完結なら表示時マスクで足りるが、
-複数マシンから到達できるサーバに生の認証情報を集約するリスクの方が大きいため。受信側（`/ingest`）でも保存前に必ずマスクを通すので、
-`--raw` を使ってもサーバ DB に生の認証情報は残らない。
+The agent masks before sending. Local-only use could get by with masking at display
+time, but the risk of collecting live credentials on a server several machines can reach
+is greater. The receiving side (`/ingest`) masks again before storing, so even
+`--raw` cannot put live credentials into the server database.
 
-## 各ツールから MCP で繋ぐ
+## Connecting each tool over MCP
 
 ```bash
 claude mcp add --transport http chist https://chist.example.com/mcp
 codex  mcp add chist --url https://chist.example.com/mcp
 ```
 
-Cursor は `~/.cursor/mcp.json` に `{"chist": {"url": "https://chist.example.com/mcp"}}`。
-Antigravity のリモート MCP 対応は未確認（`docs/mcp-setup.md` 参照）。
+For Cursor, put `{"chist": {"url": "https://chist.example.com/mcp"}}` in
+`~/.cursor/mcp.json`. Antigravity's remote MCP support is unconfirmed — see
+[`mcp-setup.md`](mcp-setup.md).
 
-2026-07-28 でプロトコルレベルのセッションが廃止されたため、サーバは
-`stateless_http=True` で動く。将来ロードバランサへ載せてもリクエストの振り分けは自由。
+2026-07-28 removed protocol-level sessions, so the server runs with
+`stateless_http=True`. That also leaves request routing free if it is ever put behind a
+load balancer.
 
-## プロジェクトの横断
+## Grouping projects across machines
 
-`sessions.project_key` でマシンを跨いで同じプロジェクトをまとめる。
+`sessions.project_key` is what ties the same project together across machines.
 
 ```
-git remote あり : github.com/you/example-project     ← マシンを跨いで一致する
-git remote なし : local:example-app               ← basename での近似
+with a git remote : github.com/you/example-project   ← matches across machines
+without one       : local:example-app                ← approximated from the basename
 ```
 
-この Mac の実測では 33 個の cwd のうち git remote が取れたのは 2 個だけだった。
-残りは `local:<basename>` になるため、**別マシンで同名ディレクトリがあると誤って
-同一視される**点に注意。厳密に分けたいプロジェクトは git remote を設定しておく。
+On the Mac measured above, only 2 of 33 distinct cwds had a resolvable git remote. The
+rest fall back to `local:<basename>`, which means **two machines with a same-named
+directory are treated as the same project**. Set a git remote on anything that must stay
+distinct.
 
 ```bash
 curl -s -H "Authorization: Bearer $CHIST_TOKEN" https://chist.example.com/stats
 ```
 
-## 認証と公開範囲
+## Authentication and exposure
 
-- `/ingest` `/stats` `/auth` は bearer token 必須。`/health` のみ認証なし（ヘルスチェック用）
-- **`/mcp` と `/` `/api/*` はアプリ内では認証されない。** 前者は MCP SDK 側のルートだから、
-  後者はブラウザが bearer token を送れないから。それぞれ Traefik の forwardAuth と
-  basicauth で保護している。プロキシを外して直接公開してはいけない
-- `CHIST_TOKEN` 未設定なら**起動を拒否する**（exit 2）。無認証で立ち上がる経路はない
-- ホスト側にポートを開けていないので、到達経路は Traefik だけ。さらに ipwhitelist で
-  `192.168.1.0/24,203.0.113.10/32` に限定
-- コンテナは非 root（uid 10001）で動く
-- 受信側でも `mask()` を通してから保存する。送信側が `push --raw` を使っても
-  生のシークレットはサーバ DB に残らない
-- **インターネットへ出す場合は追加対策が必要。** レート制限ミドルウェア（`ratelimit`）を
-  入れること。履歴は最も機微なデータの部類なので、公開面に置くなら token だけでは足りない
+- `/ingest`, `/stats` and `/auth` require a bearer token. Only `/health` is
+  unauthenticated (for health checks)
+- **`/mcp`, `/` and `/api/*` are not authenticated inside the app** — the first because
+  it is routed by the MCP SDK, the others because browsers cannot send a bearer token.
+  They are covered by forwardAuth and basicauth respectively. Never expose the app
+  without the proxy
+- Without `CHIST_TOKEN` the server **refuses to start** (exit 2). There is no path to
+  running it unauthenticated
+- No host port is published, so Traefik is the only way in, further narrowed by the IP
+  allowlist
+- The container runs as non-root (uid 10001)
+- The receiving side masks with `mask()` before storing, covering message bodies and
+  session titles alike
+- **Reaching this from the internet needs more.** Add a rate-limiting middleware
+  (`ratelimit`) at minimum. Chat history is among the most sensitive data you hold; a
+  token alone is not enough for a public-facing deployment
 
-## 動作確認済みの挙動
+## Verified behaviour
 
-Docker なしでサーバとエージェントを直結して検証した結果:
+Measured with the server and an agent wired together directly:
 
-| 確認項目 | 結果 |
+| Check | Result |
 |---|---|
-| 認証なしの `/ingest` | 401 |
-| 初回 push | 13,631 件受理 / 6.6 秒 |
-| 再 push（差分なし） | 0 件送信 |
-| `--reset` で全件再送 | 12,631 件送信 / **受理 0 件**（`UNIQUE (source, ext_id, part)` が重複を吸収） |
-| サーバ DB への MCP 接続 | `protocol_version = 2026-07-28` / 検索成功 |
-| `project_key` 集計 | `github.com/you/example-project` 374 件 など |
+| `/ingest` without authentication | 401 |
+| initial push | 13,631 rows accepted / 6.6 s |
+| second push (no delta) | 0 rows sent |
+| `--reset` full resend | 12,631 rows sent / **0 accepted** (`UNIQUE (source, ext_id, part)` absorbs duplicates) |
+| MCP against the server database | `protocol_version = 2026-07-28`, search works |
+| `project_key` aggregation | e.g. 374 rows under `github.com/you/example-project` |
 
-なお `list_sessions` が返す `messages` 件数は、ローカルの `chist sessions` より小さくなる
-（tool 系を送っていないため）。仕様どおり。
+The `messages` count from `list_sessions` is lower than `chist sessions` reports
+locally, because tool rows are not sent. That is by design.

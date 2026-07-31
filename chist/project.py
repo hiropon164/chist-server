@@ -1,8 +1,8 @@
-"""マシンを跨いでプロジェクトを同定するための鍵を作る。
+"""Build the key that identifies a project across machines.
 
-チャットログには git remote もホスト名も記録されていない。
-`git -C <cwd> remote get-url origin` を実行できるのはリポジトリが存在するマシン
-だけなので、必ず取り込み側で解決してから送る。
+Chat logs record neither the git remote nor the hostname. Only the machine that has
+the repository can run `git -C <cwd> remote get-url origin`, so this must be resolved
+on the ingest side before anything is sent.
 """
 import os
 import platform
@@ -12,7 +12,7 @@ import subprocess
 
 _cache = {}
 
-# scp 形式 (git@github.com:user/repo.git) と URL 形式の両方を受ける
+# Accept both the scp form (git@github.com:user/repo.git) and URL forms
 _SCP = re.compile(r'^[\w.+-]+@([\w.-]+):(.+)$')
 _URL = re.compile(r'^[a-z+]+://(?:[^@/]+@)?([\w.-]+(?::\d+)?)/(.+)$', re.I)
 
@@ -22,9 +22,9 @@ def host_info():
 
 
 def normalize_remote(url):
-    """remote URL を host/path 形式へ正規化する。
+    """Normalise a remote URL to host/path form.
 
-    以下はすべて 'github.com/user/repo' になる。
+    These all become 'github.com/user/repo':
       git@github.com:user/repo.git
       https://github.com/user/repo.git
       ssh://git@github.com/user/repo
@@ -44,10 +44,10 @@ def normalize_remote(url):
 
 
 def project_key(cwd):
-    """cwd からプロジェクト鍵を求める。
+    """Derive the project key from a working directory.
 
-    git remote があればそれを正規化した値、なければ `local:<basename>`。
-    後者はマシンを跨いだ同定には使えないが、少なくとも同じ名前で並ぶ。
+    Uses the normalised git remote when there is one, otherwise `local:<basename>`.
+    The latter cannot identify a project across machines, but at least groups by name.
     """
     if not cwd:
         return None
@@ -72,9 +72,9 @@ def project_key(cwd):
 
 
 def backfill(conn, only_missing=True):
-    """既存の sessions に host / project_key を埋める。
+    """Fill in host / project_key on existing sessions.
 
-    cwd の異なり数だけ git を呼ぶので、数十回で済む。
+    git is invoked once per distinct cwd, so this is a few dozen calls at most.
     """
     info = host_info()
     conn.execute('INSERT INTO hosts (host, os, last_seen) VALUES (?,?,datetime("now")) '
@@ -94,7 +94,7 @@ def backfill(conn, only_missing=True):
             + (' AND (project_key IS NULL OR host IS NULL)' if only_missing else ''),
             (key, info['host'], cwd))
         n += cur.rowcount
-    # cwd が取れないセッション（Cursor CLI の数値ディレクトリなど）にも host は付ける
+    # Sessions without a cwd (e.g. Cursor CLI's numeric directories) still get a host
     conn.execute('UPDATE sessions SET host = ? WHERE host IS NULL', (info['host'],))
     conn.commit()
     return {'cwds': len(cwds), 'sessions': n, 'host': info['host']}

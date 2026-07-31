@@ -2,8 +2,8 @@ import { defineConfig } from 'vite'
 import { svelte } from '@sveltejs/vite-plugin-svelte'
 import { viteSingleFile } from 'vite-plugin-singlefile'
 
-// 成果物は単一 HTML。chist-server は `/` で index.html を返すだけでよく、
-// 静的ファイル用のルーティングを持たずに済む。
+// The build output is a single HTML file, so the server only has to return
+// index.html at `/` and needs no routing for static assets.
 export default defineConfig({
   plugins: [svelte(), viteSingleFile()],
   build: {
@@ -13,7 +13,7 @@ export default defineConfig({
     chunkSizeWarningLimit: 4096,
   },
   server: {
-    // 開発時は起動中の chist-server へ API を転送する
+    // In development, proxy API calls to a running chist-server
     proxy: { '/api': 'http://127.0.0.1:8848' },
   },
 })
