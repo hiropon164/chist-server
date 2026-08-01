@@ -5,6 +5,8 @@ English: [README.md](README.md)
 Claude Code / Codex / Cursor CLI / Antigravity CLI のチャット履歴を 1 つの SQLite に集約し、
 日本語で全文検索する。追加依存なし（Python 3.9 標準ライブラリのみ）。
 
+![chist-server の Web UI — 検索結果](docs/screenshot.png)
+
 確定スキーマは
 [`db/schema.sql`](db/schema.sql)、MCP サーバの導入は [`docs/mcp-setup.md`](docs/mcp-setup.md)、
 複数マシンの集約は [`docs/deploy.md`](docs/deploy.md) を参照。

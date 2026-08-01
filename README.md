@@ -13,6 +13,8 @@ and lets you search it from a **web UI**, an **MCP server**, or the **command li
 Ingestion and search run on the Python 3.9 standard library — **zero dependencies**.
 Only the MCP server needs an external package.
 
+![The chist-server web UI showing search results](docs/screenshot.png)
+
 ```bash
 python3 -m chist ingest              # incremental import
 python3 -m chist search 'trigram'    # full-text search
