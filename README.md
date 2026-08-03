@@ -35,7 +35,11 @@ the same project across different machines and different tools.
   protobuf-in-SQLite for Antigravity CLI (decoded without a `.proto` definition)
 - **Incremental ingest** — unchanged files are skipped by mtime+size; changed ones resume
   from a byte offset, verified against a hash of the first 4 KB
-- **CJK-capable search** — FTS5 with the `trigram` tokenizer, so Japanese substrings match
+- **CJK-capable search** — FTS5 with the `trigram` tokenizer, so Japanese substrings match.
+  Terms shorter than three characters cannot go through the index, so they are left out and
+  the rest of the query still runs; the note says which. Dropping the whole query to a
+  substring search because one term is short would look for the query as a literal string
+  and find nothing, which is indistinguishable from having nothing to find
   (the default `unicode61` tokenizer cannot)
 - **Web UI** — Svelte SPA with search, session browsing, and statistics
 - **MCP server** — lets an agent query its own history (`search_history`, `list_sessions`,
