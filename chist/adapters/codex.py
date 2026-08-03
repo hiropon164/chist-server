@@ -22,7 +22,9 @@ def _title_for(sid):
     if _titles is None:
         _titles = {}
         try:
-            with open(INDEX) as f:
+            # Explicit encoding: without it Python follows the locale, which is
+            # cp932 on a Japanese Windows and dies on any non-ASCII title.
+            with open(INDEX, encoding='utf-8', errors='replace') as f:
                 for line in f:
                     try:
                         d = json.loads(line)
