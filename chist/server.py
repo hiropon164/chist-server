@@ -256,7 +256,7 @@ async def api_search(request: Request):
                              'note': 'Enter a search term.'})
     sources = [s for s in request.query_params.getlist('source') if s]
     hosts = [h for h in request.query_params.getlist('host') if h]
-    rows, mode = search.search(
+    rows, mode, dropped = search.search(
         _db(), q, source=sources or None, cwd=_str(request, 'cwd'),
         role=_str(request, 'role'), since=_str(request, 'since'),
         until=_str(request, 'until'), limit=_int(request, 'limit', 30),
@@ -264,12 +264,16 @@ async def api_search(request: Request):
     hits = [{'id': r['id'], 'source': r['source'], 'role': r['role'], 'ts': r['ts'],
              'model': r['model'], 'cwd': r['cwd'], 'session_title': r['title'],
              'session_id': r['session_id'], 'excerpt': r['hit']} for r in rows]
-    note = ''
+    notes = []
+    if dropped:
+        notes.append('Left out of the index search: %s (under %d characters).'
+                     % (', '.join(repr(t) for t in dropped), search.MIN_TRIGRAM))
     if mode == 'like':
-        note = ('The query is under 3 characters, so a substring search was used '
-                'instead of the full-text index.')
-    elif not hits:
-        note = 'No matches. Try a shorter term or remove some filters.'
+        notes.append('Every term is under %d characters, so the longest one was '
+                     'matched as a substring.' % search.MIN_TRIGRAM)
+    if not hits:
+        notes.append('No matches. Try dropping short terms, or a filter.')
+    note = ' '.join(notes)
     return JSONResponse({'mode': mode, 'count': len(hits), 'hits': hits, 'note': note})
 
 

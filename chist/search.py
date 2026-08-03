@@ -8,14 +8,36 @@ from .mask import mask
 MIN_TRIGRAM = 3
 
 
-def _fts_query(q):
+def plan(query):
+    """Decide how to run this query, and what had to be left out.
+
+    The trigram index cannot match a term shorter than three characters. Sending
+    the whole query to a substring search when *any* term is short looks safe and
+    is not: `watcher 残骸` then means the literal string "watcher 残骸", which
+    appears nowhere, so a query whose terms both match returns nothing. Japanese
+    makes this easy to hit -- 残骸, 常駐, 既読, 検証 are all two characters.
+
+    So the short terms are dropped and the rest goes to the index. Only when
+    every term is short does it fall back, and then on the longest one alone
+    rather than the whole string.
+
+    Returns (mode, terms, dropped).
+    """
+    terms = [t for t in query.split() if t]
+    long = [t for t in terms if len(t) >= MIN_TRIGRAM]
+    dropped = [t for t in terms if len(t) < MIN_TRIGRAM]
+    if long:
+        return 'fts', long, dropped
+    return 'like', (max(terms, key=len),) if terms else (), []
+
+
+def _fts_query(terms):
     """Wrap user input as FTS5 string literals so it cannot cause a syntax error."""
-    terms = [t for t in q.split() if t]
     return ' '.join('"%s"' % t.replace('"', '""') for t in terms)
 
 
 def uses_fts(query):
-    return all(len(t) >= MIN_TRIGRAM for t in query.split() if t)
+    return plan(query)[0] == 'fts'
 
 
 def search(conn, query, source=None, cwd=None, role=None, since=None, until=None,
@@ -43,7 +65,8 @@ def search(conn, query, source=None, cwd=None, role=None, since=None, until=None
         where.append('m.ts <= ?')
         args.append(until)
 
-    if uses_fts(query):
+    mode, terms, dropped = plan(query)
+    if mode == 'fts':
         sql = ('SELECT m.id, m.source, m.role, m.kind, m.ts, m.model, m.cwd, s.title,'
                '       s.ext_id AS session_id,'
                "       snippet(messages_fts, 0, '\x02', '\x03', '…', 14) AS hit,"
@@ -52,35 +75,35 @@ def search(conn, query, source=None, cwd=None, role=None, since=None, until=None
                'JOIN messages m ON m.id = f.rowid '
                'JOIN sessions s ON s.id = m.session_id '
                'WHERE messages_fts MATCH ?')
-        params = [_fts_query(query)] + args
+        params = [_fts_query(terms)] + args
         if where:
             sql += ' AND ' + ' AND '.join(where)
         sql += ' ORDER BY score LIMIT ?'
         params.append(limit)
-        mode = 'fts'
     else:
-        # Under 3 characters: trigram cannot match, so use LIKE
+        # Every term is too short for trigram. Match the longest one as a
+        # substring rather than the whole query, which as a literal string would
+        # almost never appear.
         sql = ('SELECT m.id, m.source, m.role, m.kind, m.ts, m.model, m.cwd, s.title,'
                '       s.ext_id AS session_id,'
                '       m.text AS hit, 0 AS score '
                'FROM messages m JOIN sessions s ON s.id = m.session_id '
                "WHERE m.kind IN ('message','thinking','artifact') AND m.text LIKE ?")
-        params = ['%' + query + '%'] + args
+        params = ['%' + (terms[0] if terms else query) + '%'] + args
         if where:
             sql += ' AND ' + ' AND '.join(where)
         sql += ' ORDER BY m.ts DESC LIMIT ?'
         params.append(limit)
-        mode = 'like'
 
     rows = []
     for r in conn.execute(sql, params):
         d = dict(r)
         if mode == 'like':
-            d['hit'] = _excerpt(d['hit'], query)
+            d['hit'] = _excerpt(d['hit'], terms[0] if terms else query)
         d['hit'] = mask(d['hit'], masked)
         d['title'] = mask(d['title'], masked)
         rows.append(d)
-    return rows, mode
+    return rows, mode, dropped
 
 
 def _excerpt(text, query, span=60):

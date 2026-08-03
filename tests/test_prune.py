@@ -107,13 +107,13 @@ class TestPruneUpdatesIndex(DBTestCase):
         self.add_message(sid, 'claude-code', 'M1', 'findable phrase here')
 
     def test_deleted_rows_stop_matching(self):
-        rows, _ = search.search(self.conn, 'findable')
+        rows, _, _ = search.search(self.conn, 'findable')
         self.assertEqual(len(rows), 1)
 
         where, args = prune.build_filter(match='findable')
         prune.prune(self.conn, where, args)
 
-        rows, _ = search.search(self.conn, 'findable')
+        rows, _, _ = search.search(self.conn, 'findable')
         self.assertEqual(rows, [], 'the FTS index still returns a deleted row')
 
     def test_integrity_check_passes_after_delete(self):

@@ -16,18 +16,18 @@ class TestTrigramFallback(DBTestCase):
         self.add_message(sid, 'claude-code', 'M2', 'チャット履歴を検索する')
 
     def test_long_query_uses_fts(self):
-        rows, mode = search.search(self.conn, 'backup')
+        rows, mode, _ = search.search(self.conn, 'backup')
         self.assertEqual(mode, 'fts')
         self.assertEqual(len(rows), 1)
 
     def test_cjk_substring_matches_via_trigram(self):
         """The point of trigram: a substring inside CJK text with no spaces."""
-        rows, mode = search.search(self.conn, 'チャット')
+        rows, mode, _ = search.search(self.conn, 'チャット')
         self.assertEqual(mode, 'fts')
         self.assertEqual(len(rows), 1)
 
     def test_short_query_falls_back_to_like(self):
-        rows, mode = search.search(self.conn, '履歴')
+        rows, mode, _ = search.search(self.conn, '履歴')
         self.assertEqual(mode, 'like')
         self.assertEqual(len(rows), 1, 'a 2-character query must still find its match')
 
@@ -48,13 +48,13 @@ class TestSearchMasking(DBTestCase):
         self.add_message(sid, 'cursor-cli', 'M1', secret)
 
     def test_body_is_masked(self):
-        rows, _ = search.search(self.conn, 'deploy')
+        rows, _, _ = search.search(self.conn, 'deploy')
         self.assertNotIn('abcdef1234567890', rows[0]['hit'])
 
     def test_title_is_masked(self):
         """Regression: Cursor and Antigravity derive titles from the first user message,
         so an unmasked title leaked whatever the body was hiding."""
-        rows, _ = search.search(self.conn, 'deploy')
+        rows, _, _ = search.search(self.conn, 'deploy')
         self.assertNotIn('abcdef1234567890', rows[0]['title'])
 
     def test_sessions_listing_masks_title(self):
@@ -124,34 +124,34 @@ class TestFilters(DBTestCase):
                          ts='2026-07-20T00:00:00Z')
 
     def test_filter_by_source(self):
-        rows, _ = search.search(self.conn, 'traefik', source=['codex'])
+        rows, _, _ = search.search(self.conn, 'traefik', source=['codex'])
         self.assertEqual([r['source'] for r in rows], ['codex'])
 
     def test_filter_by_host(self):
-        rows, _ = search.search(self.conn, 'traefik', host=['mac'])
+        rows, _, _ = search.search(self.conn, 'traefik', host=['mac'])
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]['session_id'], 'A')
 
     def test_multiple_hosts_are_or(self):
-        rows, _ = search.search(self.conn, 'traefik', host=['mac', 'server'])
+        rows, _, _ = search.search(self.conn, 'traefik', host=['mac', 'server'])
         self.assertEqual(len(rows), 2)
 
     def test_host_and_source_are_and(self):
-        rows, _ = search.search(self.conn, 'traefik', host=['mac'], source=['codex'])
+        rows, _, _ = search.search(self.conn, 'traefik', host=['mac'], source=['codex'])
         self.assertEqual(rows, [])
 
     def test_filter_by_cwd_substring(self):
-        rows, _ = search.search(self.conn, 'traefik', cwd='/srv')
+        rows, _, _ = search.search(self.conn, 'traefik', cwd='/srv')
         self.assertEqual(len(rows), 1)
 
     def test_filter_by_time_range(self):
-        rows, _ = search.search(self.conn, 'traefik', since='2026-07-10')
+        rows, _, _ = search.search(self.conn, 'traefik', since='2026-07-10')
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]['session_id'], 'B')
 
     def test_search_result_carries_session_id(self):
         """Needed so a hit can be opened with get_session."""
-        rows, _ = search.search(self.conn, 'traefik')
+        rows, _, _ = search.search(self.conn, 'traefik')
         for r in rows:
             self.assertIn(r['session_id'], ('A', 'B'))
 

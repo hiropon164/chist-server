@@ -151,7 +151,7 @@ def search_history(
         host: restrict to conversations held on these machines.
         limit: maximum results (default 20, capped at 100).
     """
-    rows, mode = search.search(
+    rows, mode, dropped = search.search(
         _db(), query, source=source, cwd=cwd, role=role, since=since, until=until,
         limit=_clip(limit, 20), masked=True, host=host)
     hits = []
@@ -168,11 +168,16 @@ def search_history(
             'excerpt': r['hit'].replace('\x02', '**').replace('\x03', '**'),
         })
     notes = []
+    if dropped:
+        notes.append('Left out of the index search: %s -- under %d characters, which '
+                     'the trigram index cannot match. The rest of the query still ran.'
+                     % (', '.join(repr(t) for t in dropped), search.MIN_TRIGRAM))
     if mode == 'like':
-        notes.append('The query is under 3 characters, so a substring search was used '
-                     'instead of the full-text index.')
+        notes.append('Every term is under %d characters, so the longest one was matched '
+                     'as a substring instead of using the full-text index.'
+                     % search.MIN_TRIGRAM)
     if not hits:
-        notes.append('No matches. Try a shorter term or drop the cwd filter.')
+        notes.append('No matches. Try dropping short terms, or a filter.')
     return {'mode': mode, 'count': len(hits), 'hits': hits, 'note': ' '.join(notes)}
 
 

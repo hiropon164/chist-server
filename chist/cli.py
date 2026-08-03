@@ -55,13 +55,17 @@ def cmd_ingest(args):
 
 def cmd_search(args):
     conn = db.connect(args.db, readonly=True)
-    rows, mode = search.search(
+    rows, mode, dropped = search.search(
         conn, args.query, source=args.source, cwd=args.cwd, role=args.role,
         since=args.since, until=args.until, limit=args.limit, masked=not args.raw,
         host=args.host)
 
+    if dropped:
+        print(_dim('Note: left out of the index search: %s (under %d characters)'
+                   % (', '.join(dropped), search.MIN_TRIGRAM)))
     if mode == 'like':
-        print(_dim('Note: query is under 3 characters, so LIKE was used instead of trigram'))
+        print(_dim('Note: every term is under %d characters, so the longest one was '
+                   'matched as a substring' % search.MIN_TRIGRAM))
     if not rows:
         print('No matches')
         return
