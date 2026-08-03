@@ -1,7 +1,10 @@
 """Schema behaviour: constraints, PRAGMAs, and the deduplication that ingest relies on."""
 import os
 import sqlite3
+import tempfile
 import unittest
+from unittest import mock
+import pathlib
 
 from chist import db
 
@@ -123,6 +126,42 @@ class TestMigration(unittest.TestCase):
             path = os.path.join(d, 'db.sqlite')
             db.connect(path).close()
             db.connect(path).close()   # must not raise on the second open
+
+
+class SchemaLoading(unittest.TestCase):
+    """Reported from a Japanese Windows install, where both of these bit."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.path = os.path.join(self.dir, 'history.db')
+
+    def test_the_schema_is_read_as_utf8_whatever_the_locale_says(self):
+        # schema.sql opens with an em dash. Without an explicit encoding Python
+        # follows the locale, and on a Japanese Windows that is cp932, which
+        # cannot decode it -- so a fresh install died before creating any tables.
+        real = pathlib.Path.read_text
+
+        def as_cp932(self, encoding=None, **kw):
+            return real(self, encoding=encoding or 'cp932', **kw)
+
+        with mock.patch.object(pathlib.Path, 'read_text', as_cp932):
+            conn = db.connect(self.path)
+        self.assertTrue(conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sessions'"
+        ).fetchone())
+
+    def test_a_failed_first_run_leaves_no_database_behind(self):
+        # sqlite3.connect creates the file, so a failure after that point used to
+        # leave an empty one. The next run then saw an existing database, went to
+        # _migrate() and failed with "no such table: sessions" -- a different
+        # error, in a different place, two runs from the real cause.
+        def boom(self, *a, **kw):
+            raise UnicodeDecodeError('cp932', b'', 0, 1, 'illegal multibyte sequence')
+
+        with mock.patch.object(pathlib.Path, 'read_text', boom):
+            with self.assertRaises(UnicodeDecodeError):
+                db.connect(self.path)
+        self.assertFalse(os.path.exists(self.path))
 
 
 if __name__ == '__main__':

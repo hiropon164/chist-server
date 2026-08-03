@@ -56,14 +56,30 @@ def connect(path=None, readonly=False):
 
     os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
     fresh = not os.path.exists(path)
+    if fresh:
+        # Read the schema before sqlite3.connect creates the file. Failing here used
+        # to leave an empty database behind, so the next run saw fresh=False, went to
+        # _migrate() and died on "no such table: sessions" -- a different error, in a
+        # different place, with the real cause two runs back.
+        #
+        # encoding is explicit because Python follows the locale otherwise, and on a
+        # Japanese Windows that is cp932, which cannot decode the em dash in the first
+        # line of schema.sql.
+        schema = SCHEMA_PATH.read_text(encoding='utf-8')
+
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     # PRAGMA foreign_keys in schema.sql only applies to the connection that ran
     # executescript. Without setting it here, ON DELETE CASCADE on messages is inert.
     conn.execute('PRAGMA foreign_keys = ON')
     if fresh:
-        conn.executescript(SCHEMA_PATH.read_text())
-        conn.commit()
+        try:
+            conn.executescript(schema)
+            conn.commit()
+        except Exception:
+            conn.close()
+            os.unlink(path)          # never leave a half-built database to be found
+            raise
         # History can contain credentials, so keep it readable by the owner only
         os.chmod(path, 0o600)
     else:
