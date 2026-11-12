@@ -109,8 +109,7 @@ class TestIngestMasksBeforeStoring(DBTestCase):
         import asyncio
         req = FakeRequest({'authorization': 'Bearer tok'},
                           body=json.dumps(payload).encode())
-        return asyncio.get_event_loop_policy().new_event_loop().run_until_complete(
-            server.ingest(req))
+        return asyncio.run(server.ingest(req))
 
     def test_body_and_title_are_masked_on_arrival(self):
         secret = 'deploy with TOKEN=abcdef1234567890'
