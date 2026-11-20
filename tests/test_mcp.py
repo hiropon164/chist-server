@@ -137,6 +137,11 @@ class TestResolveTarget(DBTestCase):
         os.environ['CHIST_SEARCH_DB'] = os.path.join(self._dir.name, 'search.db')
         self.assertIn('1 results (fts, search)', run())
         self.assertIn('2 results (fts, record)', run('--target', 'record'))
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            cli.main(['--db', self.db_path, 'search', 'nothing-like-this'])
+        self.assertIn('No matches (fts, search)', buf.getvalue(),
+                      'zero results must still say which index was asked')
 
 
 if __name__ == '__main__':

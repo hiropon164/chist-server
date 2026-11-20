@@ -72,7 +72,8 @@ def cmd_search(args):
         print(_dim('Note: every term is under %d characters, so the longest one was '
                    'matched as a substring' % search.floor(engine)))
     if not rows:
-        print('No matches')
+        # Say which index found nothing: "none here" and "none there" differ.
+        print('No matches (%s, %s)' % (mode, target))
         return
 
     for r in rows:
