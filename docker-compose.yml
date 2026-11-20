@@ -19,6 +19,10 @@ services:
     environment:
       CHIST_TOKEN: ${CHIST_TOKEN:?set CHIST_TOKEN in .env}
       CHIST_DB: /data/history.db
+      # The search database: a derived copy kept beside the record (chist/searchdb.py).
+      # Setting the path keeps it up to date; searches still use the old index until
+      # CHIST_SEARCH_ENGINE=split is added.
+      CHIST_SEARCH_DB: /data/search.db
       TZ: ${TZ:-UTC}
     volumes:
       - chist-data:/data
@@ -71,6 +75,9 @@ services:
       # Browsers cannot send a bearer token, so basicauth guards them.
       # Generate the hash with htpasswd -nbB and put it in .env (no escaping needed there).
       - traefik.http.middlewares.chist-basicauth.basicauth.users=${CHIST_BASICAUTH:?set CHIST_BASICAUTH in .env}
+      # Named rather than the default "traefik", so this console and any other on the same domain
+      # do not share one protection space.
+      - traefik.http.middlewares.chist-basicauth.basicauth.realm=chist
 
       # Traefik does not buffer responses by default, so MCP's streamable HTTP passes
       # straight through. Do not attach a buffering middleware — it will hang.

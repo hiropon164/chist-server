@@ -17,10 +17,21 @@ _PATTERNS = [
     (re.compile(r'\bya29\.[0-9A-Za-z_-]{20,}'), 'ya29.***'),
     (re.compile(r'\bglpat-[A-Za-z0-9_-]{16,}'), 'glpat-***'),
     (re.compile(r'\bnpm_[A-Za-z0-9]{30,}'), 'npm_***'),
-    # Header and environment-variable assignment forms
-    (re.compile(r'(?i)\b(authorization\s*:\s*bearer)\s+\S+'), r'\1 ***'),
-    (re.compile(r'(?i)\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|APIKEY|API_KEY))\s*[=:]\s*'
-                r'["\']?([^\s"\'&]{8,})'), r'\1=***'),
+    # Header and environment-variable assignment forms.
+    #
+    # **The closing quote before the colon has to be optional.** These were written
+    # against the shapes secrets take in a shell -- `Authorization: Bearer x`,
+    # `TOKEN=x` -- and every one of them failed on the shape they take in JSON,
+    # where the name is quoted: `"authorization": "Bearer x"`. The `"` sits between
+    # the name and the colon, so `authorization\s*:` does not reach it.
+    #
+    # That is the shape agents are actually configured in -- `.claude.json`,
+    # `settings.json` -- so the form most likely to be pasted into a session was
+    # the one form that went through unmasked.
+    (re.compile(r'(?i)\b(authorization["\']?\s*:\s*["\']?bearer)\s+([^\s"\']+)'),
+     r'\1 ***'),
+    (re.compile(r'(?i)\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|APIKEY|API_KEY)[A-Z0-9_]*)'
+                r'["\']?\s*[=:]\s*["\']?([^\s"\'&]{8,})'), r'\1=***'),
     # Values written with a label, e.g. "password: xxx" or "password = xxx".
     # Japanese labels and the full-width colon are included: in practice the English
     # assignment form alone lets real secrets through. The English words here overlap
@@ -28,7 +39,7 @@ _PATTERNS = [
     (re.compile(r'(?i)(パスワード|パスフレーズ|パスコード|トークン|シークレット|'
                 r'秘密鍵|認証情報|API\s*キー|アクセスキー|'
                 r'password|passwd|passphrase|token|secret|api\s*key|access\s*key)'
-                r'\s*[:：=]\s*["\'`]?([^\s"\'`、。，]{6,})'), r'\1: ***'),
+                r'["\']?\s*[:：=]\s*["\'`]?([^\s"\'`、。，]{6,})'), r'\1: ***'),
     # Credentials passed as command arguments. A bare random string has no assignment
     # form to key on, so these command shapes are matched explicitly.
     #   curl -u user:pass / --user user:pass
@@ -40,6 +51,19 @@ _PATTERNS = [
                 re.S), '-----BEGIN PRIVATE KEY----- *** -----END PRIVATE KEY-----'),
     (re.compile(r'\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}'), 'eyJ***.***'),
 ]
+
+
+def fingerprint():
+    """A short identifier of the rules above, which changes when any rule does.
+
+    The search database stores the one it was built with (chist.searchdb), so a
+    rule change is noticed without comparing every row.
+    """
+    import hashlib
+    h = hashlib.sha256()
+    for pat, repl in _PATTERNS:
+        h.update(repr((pat.pattern, pat.flags, repl)).encode('utf-8'))
+    return h.hexdigest()[:16]
 
 
 def mask(text, enabled=True):

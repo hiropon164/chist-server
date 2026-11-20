@@ -35,19 +35,20 @@ the same project across different machines and different tools.
   protobuf-in-SQLite for Antigravity CLI (decoded without a `.proto` definition)
 - **Incremental ingest** — unchanged files are skipped by mtime+size; changed ones resume
   from a byte offset, verified against a hash of the first 4 KB
-- **CJK-capable search** — FTS5 with the `trigram` tokenizer, so Japanese substrings match.
-  Terms shorter than three characters cannot go through the index, so they are left out and
-  the rest of the query still runs; the note says which. Dropping the whole query to a
-  substring search because one term is short would look for the query as a literal string
-  and find nothing, which is indistinguishable from having nothing to find
+- **CJK-capable search** — FTS5 with the `trigram` tokenizer, so Japanese substrings match
   (the default `unicode61` tokenizer cannot)
+- **Two-character terms are indexed too** — on a server that keeps the optional
+  [search database](#the-search-database), a bigram index covers what trigram cannot.
+  Japanese is full of two-character words, and an index that silently drops them widens
+  the search instead of narrowing it
 - **Web UI** — Svelte SPA with search, session browsing, and statistics
 - **MCP server** — lets an agent query its own history (`search_history`, `list_sessions`,
   `get_session`)
 - **Multi-machine aggregation** — each machine ingests locally and pushes deltas to a
   central server over HTTP
 - **Secret masking** — credentials are masked on display, and always before storage on the
-  aggregation server
+  aggregation server. The search database is masked again with the *current* rules every
+  time it is built, so a rule added later reaches old rows as well
 
 ## Measured performance
 
@@ -89,6 +90,8 @@ search  -s/--source  filter by source (repeatable)
         --since / --until   ISO 8601 (e.g. 2026-07-01)
         -n/--limit   default 20
         --raw        do not mask secrets
+        -t/--target  search (the search database) | record (the index inside the
+                     master database); see "The search database"
 show    --thinking   include thinking blocks
 ingest  --limit N    cap the number of files (for smoke tests)
 prune   --before / --after  time range (ISO 8601)
@@ -98,6 +101,10 @@ prune   --before / --after  time range (ISO 8601)
         --dry-run    report counts without deleting
         -y/--yes     skip confirmation (required non-interactively)
         --vacuum     reclaim file size after deleting
+reindex --check      compare the search database with the record; exit 1 if they differ
+        --rebuild    throw the search database away and refill it
+        --compare Q  do both indexes return the same rows for Q (repeatable)
+remask  -y/--yes     overwrite stored text with its masked form (server; cannot be undone)
 ```
 
 ## Pruning history
@@ -158,9 +165,59 @@ port, and joins the proxy's network directly. The Svelte UI is built in a
 `node:22-alpine` stage and baked into the image, so **the server does not need Node
 installed**. See [`docs/deploy.md`](docs/deploy.md).
 
+## The search database
+
+The record (`history.db`) carries its own trigram index, and that is all a single machine
+needs. A server can keep a second file beside it, `search.db`, by setting
+`CHIST_SEARCH_DB` (the shipped compose file does). It is **derived**: a copy of the
+searchable text with a trigram index and a bigram index, rebuilt from the record at any
+time with `chist reindex --rebuild`. Nothing in it is the only copy of anything.
+
+Where a search database is kept, every front end answers from it by default, and says so:
+
+```
+                 MCP                              CLI                  web UI
+default          search_history(q)                chist search q       "Search in: Search database"
+the record       search_history(q, target="record")   --target record  "Search in: Master index"
+```
+
+What differs:
+
+| | search database | index inside the record |
+|---|---|---|
+| terms of 3+ characters | trigram index | trigram index |
+| terms of exactly 2 | **bigram index** | left out of the search (the note says which) |
+| text searched | masked with the current rules | as stored |
+
+The second row is the reason it exists. With the record's index, `watcher 残骸` is a
+search for `watcher` alone — the two-character term is dropped, because trigram cannot
+match it and abandoning the index for one short term is worse. Measured on 78k messages:
+3,700 rows that way, 607 with the bigram index, and 607 from a brute-force scan.
+
+The third row follows from where masking happens. The server masks a row once, when it
+is stored, with the rules of that day; a rule added later never reaches it. The search
+database is masked as it is copied, and remembers which rules built it: change a rule,
+restart the server, and it rebuilds itself in the background. The rebuild is one
+transaction, so searches keep seeing the old copy until it commits. To bring the record
+itself up to date there is `chist remask` — it overwrites, and cannot be undone.
+
+It does **not** save space: the copy is about as large as the record. It can be left out
+of backups.
+
+```bash
+chist reindex            # catch up (also done automatically after every ingest)
+chist reindex --check    # compare with the record
+chist reindex --rebuild  # start over
+```
+
+`tools/search_check.py` runs the check from the Docker host and sends a Gotify message
+when the two disagree — or when the check could not be run at all, which must not look
+like a check that passed.
+
 ## Web UI
 
-Three tabs — search, sessions, statistics. Opening a URL with `?q=<query>` runs that
+Three tabs — search, sessions, statistics. The search tab has a "Search in" selector
+(search database or master index). Opening a URL with `?q=<query>` runs that
 search immediately, and `#search` / `#sessions` / `#stats` select the tab, so results are
 shareable as links. Light/dark themes follow the OS setting by default.
 
@@ -176,7 +233,8 @@ claude mcp add --transport http chist https://chist.example.com/mcp
 ```
 
 Implements **MCP 2026-07-28** over stdio or streamable HTTP, read-only and stateless.
-Tools: `search_history`, `list_sessions`, `get_session`. See
+Tools: `search_history`, `list_sessions`, `get_session`. `search_history` takes an optional
+`target` (`"search"` or `"record"`) and reports which one answered. See
 [`docs/mcp-setup.md`](docs/mcp-setup.md).
 
 For stdio use, the SDK requires Python 3.10+:
@@ -214,6 +272,12 @@ The suite covers behaviour that has actually broken, or could:
   from the first user message
 - the same ext_id under two sources is ambiguous, and `source` resolves it
 - the 3-character trigram floor, and that FTS special characters never raise
+- the search database: syncing is incremental and idempotent; **an id freed by a delete
+  and reused is not skipped** (with a control showing the failure it prevents); a reader
+  sees the old copy for the whole of a rebuild, and a rebuild that dies leaves it intact
+- masking of the search database: **the secret is not in the file's bytes** (with a
+  control that it is in the record), and a rule added later shows up in `--check`
+- every front end resolves the search target the same way and reports which one answered
 - prune refuses to run without a condition, **does not sweep up already-empty
   sessions**, covers sources with NULL timestamps, and keeps the FTS index in step
 - foreign keys and `ON DELETE CASCADE`; deduplication via `UNIQUE (source, ext_id, part)`
@@ -241,6 +305,11 @@ The local database stores raw text and masks on display (`--raw` disables it). T
 aggregation server masks **before storing**, so `push --raw` still cannot put live
 credentials into the server database.
 
+That masking is applied once, with the rules in force on the day a row arrives. Rows
+stored before a rule existed keep their old form in the file; `chist remask` reports how
+many, and `--yes` overwrites them. The search database does not have this problem — it is
+masked whenever it is built.
+
 Detected: known prefixes (`sk-`, `ghp_`, `AKIA`, `AIza`, `Bearer`, JWTs, PEM private
 keys); labelled values — `TOKEN=…` plus `password:` / `token:` / `secret:` / `api key:` /
 `access key:` and their Japanese equivalents, with the full-width colon accepted; and
@@ -266,8 +335,11 @@ the database is safe" does not hold.
 
 ## Notes and limitations
 
-- **Queries shorter than 3 characters fall back to LIKE.** The `trigram` tokenizer cannot
-  MATCH fewer than 3 characters; the CLI and UI switch automatically and say so.
+- **Term length is handled differently by the two indexes.** `trigram` cannot MATCH fewer
+  than 3 characters. The index inside the record leaves such terms out and runs the rest
+  (the note says which); only when every term is short does it fall back to a substring
+  match on the longest. The search database indexes 2-character terms as well. Every
+  result says which index answered.
 - **`tool_call` / `tool_result` are stored but not indexed.** Large diffs and file dumps
   drown out the signal. They are over 70% of all rows.
 - **Resumed sessions keep their original `uuid`.** Claude Code copies prior history into a

@@ -122,5 +122,52 @@ class TestPruneUpdatesIndex(DBTestCase):
         self.conn.execute("INSERT INTO messages_fts(messages_fts) VALUES('integrity-check')")
 
 
+class TestRemask(DBTestCase):
+    """Rows stored before a masking rule existed are brought under it."""
+
+    SECRET = 'abcdefghijklmnopqrstuvwxyz012345'
+
+    def setUp(self):
+        super().setUp()
+        self.sid = self.add_session('codex', 'S1', title='plain title')
+        self.add_message(self.sid, 'codex', 'M1', 'export API_TOKEN=%s then run' % self.SECRET)
+        self.add_message(self.sid, 'codex', 'M2', 'nothing to hide here')
+
+    def _raw(self):
+        return [r[0] for r in self.conn.execute('SELECT text FROM messages ORDER BY id')]
+
+    def test_dry_run_counts_and_changes_nothing(self):
+        before = self._raw()
+        st = prune.remask(self.conn)
+        self.assertEqual((st['messages'], st['titles'], st['applied']), (1, 0, False))
+        self.assertEqual(self._raw(), before)
+
+    def test_apply_overwrites_only_the_rows_that_differ(self):
+        untouched = self._raw()[1]
+        st = prune.remask(self.conn, apply=True)
+        self.assertEqual(st['messages'], 1)
+        raw = self._raw()
+        self.assertNotIn(self.SECRET, raw[0])
+        self.assertIn('API_TOKEN', raw[0])
+        self.assertEqual(raw[1], untouched)
+        self.assertEqual(prune.remask(self.conn)['messages'], 0, 'a second pass finds nothing')
+
+    def test_old_index_follows_the_overwrite(self):
+        from chist import search
+        self.assertEqual(len(search.search(self.conn, self.SECRET, engine='legacy')[0]), 1,
+                         'control: findable by the secret before')
+        prune.remask(self.conn, apply=True)
+        self.assertEqual(len(search.search(self.conn, self.SECRET, engine='legacy')[0]), 0)
+        self.assertEqual(len(search.search(self.conn, 'API_TOKEN', engine='legacy')[0]), 1)
+
+    def test_titles_are_covered(self):
+        self.conn.execute('UPDATE sessions SET title = ? WHERE id = ?',
+                          ('password: %s' % self.SECRET, self.sid))
+        self.conn.commit()
+        self.assertEqual(prune.remask(self.conn, apply=True)['titles'], 1)
+        title = self.conn.execute('SELECT title FROM sessions').fetchone()[0]
+        self.assertNotIn(self.SECRET, title)
+
+
 if __name__ == '__main__':
     unittest.main()

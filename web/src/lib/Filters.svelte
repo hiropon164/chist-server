@@ -1,7 +1,7 @@
 <script>
   import { SOURCES } from './api.js'
 
-  let { filters = $bindable(), showRole = false, hosts = [], onapply } = $props()
+  let { filters = $bindable(), showRole = false, showTarget = false, hosts = [], onapply } = $props()
 
   function toggleSource(id) {
     filters.sources = filters.sources.includes(id)
@@ -70,6 +70,16 @@
           <option value="assistant">assistant</option>
           <option value="system">system</option>
           <option value="tool">tool</option>
+        </select>
+      </label>
+    {/if}
+
+    {#if showTarget}
+      <label>
+        <span>Search in</span>
+        <select bind:value={filters.target} onchange={() => onapply?.()}>
+          <option value="">Search database</option>
+          <option value="record">Master index</option>
         </select>
       </label>
     {/if}

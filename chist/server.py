@@ -33,7 +33,7 @@ import sys
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse
 
-from . import db, search
+from . import db, search, searchdb
 from .mask import mask
 from .mcp_server import server
 
@@ -184,6 +184,11 @@ async def ingest(request: Request):
             ') WHERE id IN (%s)' % ','.join('?' * len(sid)), list(sid.values()))
     conn.commit()
 
+    # After the commit, and never able to fail the request: the record is what
+    # the agent was told is stored. See searchdb.after_write.
+    if accepted:
+        searchdb.after_write(conn, log=lambda m: sys.stderr.write(m + '\n'))
+
     return JSONResponse({'ok': True, 'received': len(rows), 'accepted': accepted,
                          'duplicates': len(rows) - accepted, 'skipped': skipped})
 
@@ -256,25 +261,30 @@ async def api_search(request: Request):
                              'note': 'Enter a search term.'})
     sources = [s for s in request.query_params.getlist('source') if s]
     hosts = [h for h in request.query_params.getlist('host') if h]
+    try:
+        target, engine, fell_back = search.resolve_target(_str(request, 'target'))
+    except ValueError as e:
+        return JSONResponse({'error': str(e)}, status_code=400)
     rows, mode, dropped = search.search(
         _db(), q, source=sources or None, cwd=_str(request, 'cwd'),
         role=_str(request, 'role'), since=_str(request, 'since'),
         until=_str(request, 'until'), limit=_int(request, 'limit', 30),
-        masked=True, host=hosts or None)
+        masked=True, host=hosts or None, engine=engine)
     hits = [{'id': r['id'], 'source': r['source'], 'role': r['role'], 'ts': r['ts'],
              'model': r['model'], 'cwd': r['cwd'], 'session_title': r['title'],
              'session_id': r['session_id'], 'excerpt': r['hit']} for r in rows]
-    notes = []
+    notes = [fell_back] if fell_back else []
     if dropped:
         notes.append('Left out of the index search: %s (under %d characters).'
-                     % (', '.join(repr(t) for t in dropped), search.MIN_TRIGRAM))
+                     % (', '.join(repr(t) for t in dropped), search.floor(engine)))
     if mode == 'like':
         notes.append('Every term is under %d characters, so the longest one was '
-                     'matched as a substring.' % search.MIN_TRIGRAM)
+                     'matched as a substring.' % search.floor(engine))
     if not hits:
         notes.append('No matches. Try dropping short terms, or a filter.')
     note = ' '.join(notes)
-    return JSONResponse({'mode': mode, 'count': len(hits), 'hits': hits, 'note': note})
+    return JSONResponse({'mode': mode, 'target': target, 'count': len(hits),
+                         'hits': hits, 'note': note})
 
 
 @server.custom_route('/api/sessions', methods=['GET'])
@@ -347,6 +357,15 @@ def main(argv=None):
         return 2
 
     _db()  # create or migrate the schema before serving
+    if searchdb.enabled():
+        # In the background so the server answers at once: a rebuild takes
+        # minutes, and until it commits searches see the copy as it was.
+        import threading
+        threading.Thread(
+            target=searchdb.ensure_current,
+            args=(db.db_path(os.environ.get('CHIST_DB')),),
+            kwargs={'log': lambda m: sys.stderr.write(m + '\n')},
+            name='searchdb-ensure-current', daemon=True).start()
     sys.stderr.write('chist-server http://%s:%d  (MCP: /mcp, ingest: /ingest)\n'
                      % (args.host, args.port))
     # 2026-07-28 removed protocol-level sessions, so run stateless

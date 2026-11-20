@@ -146,6 +146,40 @@ Note that a backup script archiving the whole volume will copy the entire databa
 run, so its efficiency drops as the database grows. Consider pruning once it reaches the
 gigabyte range.
 
+### The search database
+
+The compose file sets `CHIST_SEARCH_DB=/data/search.db`. That makes the server keep a
+second file beside the record: a copy of the searchable text with a trigram index and a
+bigram index, which is what searches (MCP, CLI in the container, web UI) answer from by
+default. It is derived -- delete it and `chist reindex --rebuild` brings it back -- and
+it roughly doubles the space the volume needs (measured: 248 MB record + 256 MB copy at
+78k messages).
+
+```bash
+docker exec chist-server python -m chist reindex            # catch up
+docker exec chist-server python -m chist reindex --check    # compare with the record; exit 1 if they differ
+docker exec chist-server python -m chist reindex --rebuild  # throw away and refill (one transaction)
+```
+
+What it buys: two-character terms are indexed (the record's own index drops any term
+under three characters, which silently widens the search), and text is masked with the
+*current* rules as it is copied. Change a masking rule, restart the container, and the
+copy is rebuilt in the background; searches keep seeing the old copy until it commits.
+
+The record's own masking is applied once, when a row is stored. To bring rows stored
+under older rules up to date -- this overwrites them and cannot be undone:
+
+```bash
+docker exec chist-server python -m chist remask          # count only
+docker exec chist-server python -m chist remask --yes
+```
+
+`tools/search_check.py` runs `reindex --check` from the Docker host and sends a Gotify
+message when the two disagree *or when the check could not be run*. Put it on a daily
+timer; it appends one line per run to `~/.local/state/chist/search-check.log`.
+
+Remove the `CHIST_SEARCH_DB` line to go back to the single-file behaviour.
+
 ### Where the database lives
 
 Use the named volume (`chist-data`). **Never put SQLite on NFS or SMB** — its locking
@@ -156,6 +190,8 @@ breaks.
 docker run --rm -v chist-data:/data -v "$PWD":/backup alpine \
   tar czf /backup/chist-$(date +%Y%m%d).tar.gz -C /data .
 ```
+
+`search.db` can be left out of backups: it is rebuilt from `history.db`.
 
 ## Agent side
 

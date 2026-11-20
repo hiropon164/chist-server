@@ -35,7 +35,9 @@ class Hit(TypedDict):
 
 
 class SearchResult(TypedDict):
-    mode: str           # 'fts' (full-text index) or 'like' (substring fallback)
+    mode: str           # 'fts' (trigram index), 'bigram' (2-character index, search
+                        # database only) or 'like' (substring fallback)
+    target: str         # which database answered: 'search' or 'record'
     count: int
     hits: List[Hit]
     note: str           # extra remarks, empty when none (NotRequired makes the SDK
@@ -124,9 +126,12 @@ def _clip(n, default, hi=MAX_LIMIT):
     name='search_history',
     description=(
         'Full-text search over past chat history, returning an excerpt around each match. '
-        'Queries of 3+ characters use the full-text index; shorter ones fall back to a '
-        'substring search automatically. Pass part of a project path as cwd to restrict '
-        'the search to that project.'
+        'By default it searches the search database: terms of 2+ characters use an index, '
+        'and text is masked before indexing, so a secret value itself is not findable. '
+        'Pass target="record" to search the index inside the master database instead: '
+        'there, terms under 3 characters are left out of the index search, and the text '
+        'is as stored. The result says which one answered. Pass part of a project path '
+        'as cwd to restrict the search to that project.'
     ),
     annotations=READ_ONLY,
 )
@@ -139,10 +144,13 @@ def search_history(
     until: Optional[str] = None,
     host: Optional[List[str]] = None,
     limit: int = 20,
+    target: Optional[str] = None,
 ) -> SearchResult:
     """
     Args:
         query: the search term.
+        target: 'search' for the search database, 'record' for the index inside the
+            master database. Omitted, it is the search database wherever one is kept.
         source: restrict to these sources: claude-code / codex / cursor-cli / antigravity-cli.
         cwd: substring match on the project path.
         role: user / assistant / system / tool.
@@ -151,9 +159,11 @@ def search_history(
         host: restrict to conversations held on these machines.
         limit: maximum results (default 20, capped at 100).
     """
+    target, engine, fell_back = search.resolve_target(target)
+    notes = [fell_back] if fell_back else []
     rows, mode, dropped = search.search(
         _db(), query, source=source, cwd=cwd, role=role, since=since, until=until,
-        limit=_clip(limit, 20), masked=True, host=host)
+        limit=_clip(limit, 20), masked=True, host=host, engine=engine)
     hits = []
     for r in rows:
         hits.append({
@@ -167,18 +177,18 @@ def search_history(
             'session_id': r['session_id'],
             'excerpt': r['hit'].replace('\x02', '**').replace('\x03', '**'),
         })
-    notes = []
     if dropped:
         notes.append('Left out of the index search: %s -- under %d characters, which '
-                     'the trigram index cannot match. The rest of the query still ran.'
-                     % (', '.join(repr(t) for t in dropped), search.MIN_TRIGRAM))
+                     'the index cannot match. The rest of the query still ran.'
+                     % (', '.join(repr(t) for t in dropped), search.floor(engine)))
     if mode == 'like':
         notes.append('Every term is under %d characters, so the longest one was matched '
                      'as a substring instead of using the full-text index.'
-                     % search.MIN_TRIGRAM)
+                     % search.floor(engine))
     if not hits:
         notes.append('No matches. Try dropping short terms, or a filter.')
-    return {'mode': mode, 'count': len(hits), 'hits': hits, 'note': ' '.join(notes)}
+    return {'mode': mode, 'target': target, 'count': len(hits), 'hits': hits,
+            'note': ' '.join(notes)}
 
 
 @server.tool(

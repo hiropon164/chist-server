@@ -89,9 +89,15 @@ support is unconfirmed, so try the stdio form first.
 
 | Tool | Purpose | Default / cap |
 |---|---|---|
-| `search_history(query, source?, cwd?, role?, since?, until?, host?, limit)` | full-text search, returns excerpts | limit 20 / 100 |
+| `search_history(query, source?, cwd?, role?, since?, until?, host?, limit, target?)` | full-text search, returns excerpts | limit 20 / 100 |
 | `list_sessions(cwd?, source?, since?, host?, limit)` | list sessions | limit 20 / 100 |
 | `get_session(session_id, source?, offset?, limit?, thinking?)` | conversation body | limit 50 / 100, 40,000 chars per response |
+
+`search_history` answers from the search database where the server keeps one (terms of
+two or more characters are indexed; text is masked before indexing). Pass
+`target="record"` to use the index inside the master database instead (terms under three
+characters are left out; text as stored). The result's `target` field says which one
+answered. `list_sessions` and `get_session` always read the master database.
 
 All three declare `read_only_hint=True`, `destructive_hint=False` and
 `idempotent_hint=True`, and return a structured schema defined with TypedDict.

@@ -3,7 +3,8 @@ import argparse
 import os
 import sys
 
-from . import db, ingest, project, prune as prune_mod, push as push_mod, search
+from . import (db, ingest, project, prune as prune_mod, push as push_mod, search,
+               searchdb)
 from .adapters import ADAPTERS
 
 BOLD, DIM, HL, RESET = '\033[1m', '\033[2m', '\033[43;30m', '\033[0m'
@@ -38,6 +39,7 @@ def cmd_ingest(args):
     sources = args.source or list(ADAPTERS)
     stats = ingest.ingest_all(conn, sources, progress=progress, limit=args.limit)
     sys.stderr.write('\r' + ' ' * 60 + '\r')
+    searchdb.after_write(conn, log=lambda m: sys.stderr.write(m + '\n'))
 
     print('%-16s %7s %7s %7s %8s %8s %6s' %
           ('source', 'files', 'read', 'skip', 'msgs', 'sessions', 'sec'))
@@ -55,17 +57,20 @@ def cmd_ingest(args):
 
 def cmd_search(args):
     conn = db.connect(args.db, readonly=True)
+    target, engine, fell_back = search.resolve_target(args.target)
     rows, mode, dropped = search.search(
         conn, args.query, source=args.source, cwd=args.cwd, role=args.role,
         since=args.since, until=args.until, limit=args.limit, masked=not args.raw,
-        host=args.host)
+        host=args.host, engine=engine)
 
+    if fell_back:
+        print(_dim('Note: ' + fell_back))
     if dropped:
         print(_dim('Note: left out of the index search: %s (under %d characters)'
-                   % (', '.join(dropped), search.MIN_TRIGRAM)))
+                   % (', '.join(dropped), search.floor(engine))))
     if mode == 'like':
         print(_dim('Note: every term is under %d characters, so the longest one was '
-                   'matched as a substring' % search.MIN_TRIGRAM))
+                   'matched as a substring' % search.floor(engine)))
     if not rows:
         print('No matches')
         return
@@ -82,7 +87,7 @@ def cmd_search(args):
         print('  %s' % _render(r['hit']).replace('\n', ' '))
         print('  %s' % _dim('id=%d' % r['id']))
         print()
-    print(_dim('%d results (%s)' % (len(rows), mode)))
+    print(_dim('%d results (%s, %s)' % (len(rows), mode, target)))
 
 
 def cmd_sessions(args):
@@ -211,6 +216,80 @@ def cmd_errors(args):
         print('  %s' % r['reason'])
 
 
+def cmd_remask(args):
+    conn = db.connect(args.db)
+    st = prune_mod.remask(conn, apply=False)
+    print('Stored in a form the current masking rules would change:')
+    print('  messages : %d' % st['messages'])
+    print('  titles   : %d' % st['titles'])
+    if not (st['messages'] or st['titles']):
+        return 0
+    if not args.yes:
+        print()
+        print(_dim('Nothing was changed. Pass --yes to overwrite them with the masked '
+                   'form. This cannot be undone, and is meant for the aggregation '
+                   'server -- a local database keeps its text verbatim on purpose.'))
+        return 0
+    st = prune_mod.remask(conn, apply=True)
+    print('Overwritten: %d messages / %d titles' % (st['messages'], st['titles']))
+    searchdb.after_write(conn, log=lambda m: sys.stderr.write(m + '\n'))
+    return 0
+
+
+def cmd_reindex(args):
+    """Maintain the search database (chist.searchdb)."""
+    hp = db.db_path(args.db)
+    if not os.path.exists(hp):
+        print('No history database at %s' % hp)
+        return 1
+    sconn = searchdb.connect(hp, args.search_db)
+    print('record: %s' % hp)
+    print('copy  : %s' % (args.search_db or searchdb.default_path(hp)))
+
+    if args.compare:
+        hconn = db.connect(hp, readonly=True)
+        bad = 0
+        for q in args.compare:
+            a, mode_a, _ = search.search(hconn, q, limit=args.limit, engine='legacy')
+            b, mode_b, _ = searchdb.search(sconn, q, limit=args.limit)
+            ia, ib = {r['id'] for r in a}, {r['id'] for r in b}
+            same = ia == ib
+            bad += not same
+            print('%-4s %-24r legacy %4d (%s) / split %4d (%s)  only-legacy %d  only-split %d'
+                  % ('ok' if same else 'DIFF', q, len(ia), mode_a, len(ib), mode_b,
+                     len(ia - ib), len(ib - ia)))
+        hconn.close()
+        sconn.close()
+        return 1 if bad else 0
+
+    if args.check:
+        pass
+    elif args.rebuild:
+        print('rebuilt: %d rows' % searchdb.rebuild(sconn))
+    elif searchdb.stale(sconn) and \
+            sconn.execute('SELECT 1 FROM docs LIMIT 1').fetchone():
+        print('masking rules changed since the copy was built')
+        print('rebuilt: %d rows' % searchdb.rebuild(sconn))
+    else:
+        dropped = searchdb.reconcile(sconn)
+        added = searchdb.sync(sconn)
+        searchdb.optimize(sconn)
+        print('synced: +%d / -%d rows' % (added, dropped))
+
+    st = searchdb.check(sconn)
+    sconn.close()
+    print('record %(record)d rows / copy %(copy)d rows / missing %(missing)d / '
+          'extra %(extra)d / text differs %(text_differs)d' % st)
+    if not st['mask_rules_current']:
+        print('note: the copy was built with other masking rules than the current ones')
+    if st['record_unmasked']:
+        print('note: %d rows of the record are stored in a form the current masking rules '
+              'would change (the copy holds them masked)' % st['record_unmasked'])
+    print('ok' if st['ok'] else 'NOT IN STEP -- run `chist reindex`; if it stays so, '
+          '`chist reindex --rebuild`')
+    return 0 if st['ok'] else 1
+
+
 def cmd_prune(args):
     where, wargs = prune_mod.build_filter(
         before=args.before, after=args.after, source=args.source,
@@ -257,6 +336,7 @@ def cmd_prune(args):
 
     st = prune_mod.prune(conn, where, wargs, drop_empty_sessions=not args.keep_sessions)
     print('Deleted: %d messages / %d empty sessions' % (st['messages'], st['sessions']))
+    searchdb.after_write(conn, deleted=True, log=lambda m: sys.stderr.write(m + '\n'))
 
     if args.vacuum:
         print('Running VACUUM... (needs free space equal to the database size)')
@@ -296,6 +376,9 @@ def main(argv=None):
     sp.add_argument('-n', '--limit', type=int, default=20)
     sp.add_argument('--host', action='append', help='filter by machine (repeatable)')
     sp.add_argument('--raw', action='store_true', help='do not mask secrets')
+    sp.add_argument('-t', '--target', choices=list(search.TARGETS),
+                    help='which database answers: the search database (default where '
+                         'one is kept) or the index inside the record')
     sp.set_defaults(func=cmd_search)
 
     sp = sub.add_parser('sessions', help='list sessions')
@@ -348,6 +431,27 @@ def main(argv=None):
     sp.add_argument('--keep-sessions', action='store_true',
                     help='keep sessions even when no body remains')
     sp.set_defaults(func=cmd_prune)
+
+    sp = sub.add_parser('remask', help='apply the current masking rules to stored text '
+                        '(server; dry run unless --yes)')
+    sp.add_argument('-y', '--yes', action='store_true',
+                    help='overwrite the stored text (cannot be undone)')
+    sp.set_defaults(func=cmd_remask)
+
+    sp = sub.add_parser('reindex', help='maintain the search database (search.db)')
+    sp.add_argument('--search-db', help='path of the search database '
+                    '(default: CHIST_SEARCH_DB, else search.db beside the history)')
+    g = sp.add_mutually_exclusive_group()
+    g.add_argument('--check', action='store_true',
+                   help='only compare the copy with the record; change nothing')
+    g.add_argument('--rebuild', action='store_true',
+                   help='empty the copy and fill it again from the record')
+    g.add_argument('--compare', action='append', metavar='QUERY',
+                   help='run QUERY on the old index and on the copy and report '
+                        'whether the same rows come back (repeatable)')
+    sp.add_argument('-n', '--limit', type=int, default=1000,
+                    help='row cap per engine for --compare (default 1000)')
+    sp.set_defaults(func=cmd_reindex)
 
     args = p.parse_args(argv)
     if not getattr(args, 'func', None):

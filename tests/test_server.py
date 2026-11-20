@@ -137,5 +137,53 @@ class TestIngestMasksBeforeStoring(DBTestCase):
         self.assertEqual(json.loads(res.body)['skipped'], 1)
 
 
+@unittest.skipUnless(HAVE_SDK, 'MCP SDK not installed')
+class TestSearchApiTarget(DBTestCase):
+    """The web API answers from the search database by default, and says which."""
+
+    def setUp(self):
+        super().setUp()
+        import os
+        from chist import searchdb
+        self._os, self._searchdb = os, searchdb
+        self._env = {k: os.environ.pop(k, None)
+                     for k in ('CHIST_SEARCH_DB', 'CHIST_SEARCH_ENGINE')}
+        os.environ['CHIST_SEARCH_DB'] = os.path.join(self._dir.name, 'search.db')
+        self._saved_conn = server._conn
+        server._conn = self.conn
+        sid = self.add_session('claude-code', 'S1')
+        self.add_message(sid, 'claude-code', 'M1', 'watcher の残骸を数える')
+        self.add_message(sid, 'claude-code', 'M2', 'watcher を張り直す')
+
+    def tearDown(self):
+        server._conn = self._saved_conn
+        self._searchdb.close_all()
+        for k, v in self._env.items():
+            if v is None:
+                self._os.environ.pop(k, None)
+            else:
+                self._os.environ[k] = v
+        super().tearDown()
+
+    def _search(self, **params):
+        import asyncio
+        resp = asyncio.run(server.api_search(FakeRequest(params=params)))
+        return resp.status_code, json.loads(resp.body)
+
+    def test_default_is_the_search_database(self):
+        code, r = self._search(q='watcher 残骸')
+        self.assertEqual((code, r['target'], r['count'], r['note']), (200, 'search', 1, ''))
+
+    def test_record_on_request(self):
+        code, r = self._search(q='watcher 残骸', target='record')
+        self.assertEqual((code, r['target'], r['count']), (200, 'record', 2))
+        self.assertIn('under 3 characters', r['note'])
+
+    def test_unknown_target_is_a_400(self):
+        code, r = self._search(q='watcher', target='both')
+        self.assertEqual(code, 400)
+        self.assertIn('target', r['error'])
+
+
 if __name__ == '__main__':
     unittest.main()

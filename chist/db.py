@@ -31,15 +31,24 @@ def _migrate(conn):
     if cur >= SCHEMA_VERSION:
         return 0
     applied = 0
-    for version in range(cur + 1, SCHEMA_VERSION + 1):
-        for stmt in _MIGRATIONS.get(version, []):
-            try:
-                conn.execute(stmt)
-                applied += 1
-            except sqlite3.OperationalError as e:
-                if 'duplicate column' not in str(e).lower():
-                    raise
-    conn.execute('PRAGMA user_version = %d' % SCHEMA_VERSION)
+    # One transaction for the whole run. DDL in SQLite is transactional, and
+    # without this a failure part way leaves some tables created and
+    # user_version unchanged -- the next run redoes the earlier statements,
+    # fails differently, and the original cause is two runs back.
+    conn.execute('BEGIN')
+    try:
+        for version in range(cur + 1, SCHEMA_VERSION + 1):
+            for stmt in _MIGRATIONS.get(version, []):
+                try:
+                    conn.execute(stmt)
+                    applied += 1
+                except sqlite3.OperationalError as e:
+                    if 'duplicate column' not in str(e).lower():
+                        raise
+        conn.execute('PRAGMA user_version = %d' % SCHEMA_VERSION)
+    except Exception:
+        conn.rollback()
+        raise
     conn.commit()
     return applied
 

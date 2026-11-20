@@ -91,6 +91,34 @@ def prune(conn, where, args, drop_empty_sessions=True):
     return {'messages': max(deleted, 0), 'sessions': max(dropped, 0)}
 
 
+def remask(conn, apply=False):
+    """Apply the current masking rules to text and titles already stored.
+
+    For the aggregation server. It masks before storing, but only with the rules
+    of that day: a rule added later never reaches the rows already there, so they
+    sit in the file (and its backups) in a form the server would no longer accept.
+    This rewrites exactly those rows. Output was already masked on the way out, so
+    nothing a search or a read returns changes -- only what is at rest.
+
+    **Not for a machine's local database**, which keeps the text verbatim on
+    purpose (see chist.mask). Nothing stops it running there; the CLI asks first.
+
+    It cannot be undone, and copies made before it (backups) keep the old form.
+    With apply=False nothing is written and the counts say what would be.
+    """
+    from .mask import mask
+    rows = [(mask(t), i) for i, t in conn.execute('SELECT id, text FROM messages')
+            if mask(t) != t]
+    titles = [(mask(t), i) for i, t in conn.execute(
+        'SELECT id, title FROM sessions WHERE title IS NOT NULL') if mask(t) != t]
+    if apply:
+        # The UPDATE trigger on messages keeps the old in-file index in step.
+        conn.executemany('UPDATE messages SET text = ? WHERE id = ?', rows)
+        conn.executemany('UPDATE sessions SET title = ? WHERE id = ?', titles)
+        conn.commit()
+    return {'messages': len(rows), 'titles': len(titles), 'applied': bool(apply)}
+
+
 def vacuum(conn):
     """Return freed space to the filesystem and optimise the FTS index.
 

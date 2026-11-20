@@ -6,7 +6,7 @@
   let { onopen, initialQuery = '', hosts = [] } = $props()
 
   let query = $state(initialQuery)
-  let filters = $state({ sources: [], hosts: [], cwd: '', role: '', since: '', until: '', limit: 30 })
+  let filters = $state({ sources: [], hosts: [], cwd: '', role: '', since: '', until: '', limit: 30, target: '' })
   let result = $state(null)
   let loading = $state(false)
   let error = $state('')
@@ -31,6 +31,7 @@
         since: filters.since,
         until: filters.until,
         limit: filters.limit,
+        target: filters.target,
       })
       lastQuery = q
       // Make the result shareable as a link
@@ -66,7 +67,7 @@
     </button>
   </div>
 
-  <Filters bind:filters showRole {hosts} onapply={() => lastQuery && run()} />
+  <Filters bind:filters showRole showTarget {hosts} onapply={() => lastQuery && run()} />
 
   {#if error}
     <p class="msg error">{error}</p>
@@ -76,6 +77,7 @@
     <p class="msg">
       “{lastQuery}” — {result.count} results
       {#if result.mode === 'like'}<span class="tag">substring</span>{/if}
+      {#if result.target === 'record'}<span class="tag">master index</span>{/if}
       {#if result.note}<span class="note">{result.note}</span>{/if}
     </p>
 

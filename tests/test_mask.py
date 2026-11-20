@@ -32,6 +32,52 @@ class TestMaskDetects(unittest.TestCase):
         self.assertMasked('Authorization: Bearer a1b2c3d4e5f6a7b8c9d0e1f2',
                           'a1b2c3d4e5f6a7b8c9d0e1f2')
 
+    def test_key_suffixed_names(self):
+        """`SECRET_KEY=` went through because the rule required the name to *end*
+        with the keyword, so a name such as `…__SECRET_KEY` was not recognised."""
+        for s in (
+            'FORGEJO__security__SECRET_KEY=a1b2c3d4e5f6a7b8c9d0e1f2',
+            'SECRET_KEY=a1b2c3d4e5f6a7b8c9d0e1f2',
+            'MY_TOKEN_VALUE=a1b2c3d4e5f6a7b8c9d0e1f2',
+        ):
+            self.assertMasked(s, 'a1b2c3d4e5f6a7b8c9d0e1f2')
+
+    def test_plain_key_names_are_left_alone(self):
+        """The control. Widening the name match must not swallow names that carry
+        no secret keyword -- masking those costs searchability for nothing."""
+        for s in (
+            'PUBLIC_KEY=a1b2c3d4e5f6a7b8c9d0e1f2',
+            'SSH_KEY_PATH=/home/you/.ssh/id_ed25519',
+        ):
+            self.assertEqual(mask(s), s)
+
+    def test_json_shapes(self):
+        """The shape a config file writes, which is the shape this fleet pastes.
+
+        Every assignment rule here was written against a shell: `Authorization:
+        Bearer x`, `TOKEN=x`. In JSON the name is quoted, so a `"` sits between the
+        name and the colon and `authorization\\s*:` never reaches it. The one form
+        the machines are actually configured in -- `.claude.json`, `settings.json` --
+        was the one form that went through unmasked.
+
+        A tool that fails on a config file can print the whole file as its error
+        (PowerShell's `ConvertFrom-Json` does), and the text then sits in a
+        transcript. Masking has to catch that shape on the way into the database,
+        which is the half that does not scroll away.
+        """
+        for text, leak in [
+            ('"Authorization": "Bearer a1b2c3d4e5f6a7b8c9d0e1f2"',
+             'a1b2c3d4e5f6a7b8c9d0e1f2'),
+            ('"token": "a1b2c3d4e5f6a7b8c9d0e1f2"', 'a1b2c3d4e5f6a7b8c9d0e1f2'),
+            ('"CHIST_TOKEN": "a1b2c3d4e5f6a7b8c9d0e1f2"', 'a1b2c3d4e5f6a7b8c9d0e1f2'),
+            ('"password": "a1b2c3d4e5f6a7b8c9d0e1f2"', 'a1b2c3d4e5f6a7b8c9d0e1f2'),
+            # Indented and comma-terminated, the way it actually appears in a file
+            ('    "Authorization": "Bearer a1b2c3d4e5f6a7b8c9d0e1f2",',
+             'a1b2c3d4e5f6a7b8c9d0e1f2'),
+        ]:
+            with self.subTest(text=text):
+                self.assertMasked(text, leak)
+
     def test_jwt(self):
         self.assertMasked(
             'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w',

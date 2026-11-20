@@ -3,6 +3,9 @@
 The trigram tokenizer cannot MATCH queries shorter than 3 characters, so anything
 shorter falls back to LIKE automatically.
 """
+import sqlite3
+
+from . import searchdb
 from .mask import mask
 
 MIN_TRIGRAM = 3
@@ -40,9 +43,70 @@ def uses_fts(query):
     return plan(query)[0] == 'fts'
 
 
+TARGETS = ('search', 'record')
+
+
+def resolve_target(target=None):
+    """Turn what a caller asked for into (target, engine, note).
+
+    'search' is the search database, 'record' the index inside the master
+    database. Every front end (MCP, CLI, web) goes through here so they agree.
+
+    The default is the search database wherever one is kept. Where none is --
+    a machine's local database, by default -- the record answers instead. That
+    fallback is silent only when nothing was asked for; someone who asked for
+    'search' by name is told they are not getting it. Either way the returned
+    target is the one that answers, and callers show it.
+    """
+    asked = (target or '').strip().lower() or None
+    if asked is not None and asked not in TARGETS:
+        raise ValueError("target must be 'search' or 'record'")
+    if asked == 'record':
+        return 'record', 'legacy', ''
+    if searchdb.enabled():
+        return 'search', 'split', ''
+    note = ''
+    if asked == 'search':
+        note = ("No search database is kept here, so the master database's own "
+                'index answered.')
+    return 'record', 'legacy', note
+
+
+def floor(engine=None):
+    """The shortest term the index can match with the engine in use.
+
+    Callers word their notes with this instead of MIN_TRIGRAM: with the split
+    engine a 2-character term is an index search, not something left out.
+    """
+    if searchdb.engine(engine) == 'split':
+        return searchdb.MIN_BIGRAM
+    return MIN_TRIGRAM
+
+
 def search(conn, query, source=None, cwd=None, role=None, since=None, until=None,
-           limit=20, masked=True, host=None):
-    """Return search results with a snippet around each match."""
+           limit=20, masked=True, host=None, engine=None):
+    """Return search results with a snippet around each match.
+
+    `engine` picks the index: 'legacy' is the one inside the history database,
+    'split' is the separate search database (chist.searchdb). Left as None it
+    follows CHIST_SEARCH_ENGINE, which defaults to legacy.
+    """
+    if searchdb.engine(engine) == 'split':
+        sconn = searchdb.for_history(conn)
+        # Catch up first. It is a no-op when nothing is new, and it means a copy
+        # that fell behind (or was deleted) answers correctly instead of quietly
+        # returning less.
+        try:
+            searchdb.sync(sconn)
+        except sqlite3.OperationalError:
+            # Something else holds the write lock -- a rebuild does, for minutes.
+            # Reading needs no lock: answer from the copy as it stands rather
+            # than fail a search because a write could not be made.
+            sconn.rollback()
+        return searchdb.search(sconn, query, source=source, cwd=cwd, role=role,
+                               since=since, until=until, limit=limit,
+                               masked=masked, host=host)
+
     where = []
     args = []
     if source:

@@ -141,6 +141,10 @@ CREATE INDEX ix_messages_model   ON messages(model) WHERE model IS NOT NULL;
 --------------------------------------------------------------------------------
 -- 5. Full-text index
 --------------------------------------------------------------------------------
+-- This is the record's own index. A server may also keep a separate search database
+-- (chist/searchdb.py: search.db), which is what searches use by default there; this
+-- one stays, and answers when a caller asks for target="record".
+--
 -- trigram: required for CJK. The default unicode61 splits on whitespace, so a phrase
 --          with no spaces becomes a single token and substrings never match.
 -- content=: external-content form, so the body is not stored twice.
